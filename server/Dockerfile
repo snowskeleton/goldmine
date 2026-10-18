@@ -1,18 +1,16 @@
-# Build from the repository root so the shared desktop modules are included:
+# Build from the repository root so the addon (which clients install from here) is included:
 #   docker build -f server/Dockerfile -t goldmine-server .
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     GOLDMINE_DATA=/data \
-    GOLDMINE_LIB=/app/desktop \
     GOLDMINE_PORT=8080
 
 WORKDIR /app
 COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-COPY desktop/*.py desktop/
 # The addon clients install and update from (Data.lua is per machine and excluded below).
 COPY addon/Goldmine addon/Goldmine
 COPY server/goldmine_server server/goldmine_server

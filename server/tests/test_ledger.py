@@ -1,8 +1,10 @@
+import argparse
 import csv
 import io
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -10,8 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import goldmine  # noqa: E402
-import svparse  # noqa: E402
+from goldmine_server import ledger, svparse  # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "Goldmine.lua"
 
@@ -69,24 +70,23 @@ class ImportTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_cli(self, *argv):
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = goldmine.main(["--db", self.db, *argv])
-        self.assertEqual(rc, 0)
-        return buf.getvalue()
+    def sync(self):
+        conn = ledger.connect(self.db)
+        try:
+            return ledger.import_file(conn, FIXTURE)
+        finally:
+            conn.commit()
+            conn.close()
 
     def test_sync_is_idempotent(self):
-        out = self.run_cli("sync", "--file", str(FIXTURE))
-        total = svparse.parse_file(FIXTURE)["GoldmineDB"]["log"]
-        self.assertIn(f"{len(total)} new of {len(total)}", out)
-        out = self.run_cli("sync", "--file", str(FIXTURE))
-        self.assertIn(f"0 new of {len(total)}", out)
+        total = len(svparse.parse_file(FIXTURE)["GoldmineDB"]["log"])
+        self.assertEqual(self.sync(), (total, total))
+        self.assertEqual(self.sync(), (0, total))
 
     def test_imported_values(self):
-        self.run_cli("sync", "--file", str(FIXTURE))
-        conn = goldmine.connect(self.db)
-        rows = goldmine.query_rows(conn)
+        self.sync()
+        conn = ledger.connect(self.db)
+        rows = ledger.query_rows(conn)
         sources = [r["source"] for r in rows]
         for expected in ("baseline", "vendor", "repair", "auction_sale", "mail_send", "quest",
                          "loot", "flight", "barber", "unknown", "reconcile"):
@@ -98,39 +98,41 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(tuple(char), ("Snow", "Testrealm", "MAGE", rows[-1]["balance"]))
 
     def test_csv_export_and_filters(self):
-        self.run_cli("sync", "--file", str(FIXTURE))
-        out_path = os.path.join(self.tmp.name, "out.csv")
-        self.run_cli("export", out_path, "--source", "auction_sale", "--char", "Snow")
-        with open(out_path, newline="") as f:
-            rows = list(csv.DictReader(f))
+        self.sync()
+        buf = io.StringIO()
+        ledger.write_csv(ledger.connect(self.db), buf, source="auction_sale", char="Snow")
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["delta_gold"], "0.9500")
         self.assertEqual(rows[0]["direction"], "in")
         self.assertIn('"buyer": "Buyerguy"', rows[0]["meta"])
 
     def test_summary_runs(self):
-        self.run_cli("sync", "--file", str(FIXTURE))
-        out = self.run_cli("summary")
+        self.sync()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ledger.summary(argparse.Namespace(conn=ledger.connect(self.db), days=None, char=None))
+        out = out.getvalue()
         self.assertIn("auction_sale", out)
         self.assertIn("TOTAL", out)
 
     def test_item_link_parsing(self):
         link = "|cnIQ1:|Hitem:81055::::::::3:70:::::::::|h[Darkmoon Ride Ticket]|h|r"
-        self.assertEqual(goldmine.parse_item(link), (81055, "Darkmoon Ride Ticket"))
-        self.assertEqual(goldmine.parse_item("Linen Cloth"), (None, "Linen Cloth"))
-        self.assertEqual(goldmine.parse_item(None), (None, None))
+        self.assertEqual(ledger.parse_item(link), (81055, "Darkmoon Ride Ticket"))
+        self.assertEqual(ledger.parse_item("Linen Cloth"), (None, "Linen Cloth"))
+        self.assertEqual(ledger.parse_item(None), (None, None))
 
     def test_item_columns_and_region(self):
-        self.run_cli("sync", "--file", str(FIXTURE))
-        conn = goldmine.connect(self.db)
+        self.sync()
+        conn = ledger.connect(self.db)
         names = {r[0] for r in conn.execute("SELECT item_name FROM transactions WHERE item_name IS NOT NULL")}
         self.assertIn("Linen Cloth", names)  # from the AH sale invoice
         self.assertEqual(conn.execute("SELECT region FROM characters").fetchone()[0], "US")
 
     def test_market_data_import(self):
-        self.run_cli("sync", "--file", str(FIXTURE))
-        self.run_cli("sync", "--file", str(FIXTURE))  # re-import must not duplicate rows
-        conn = goldmine.connect(self.db)
+        self.sync()
+        self.sync()  # re-import must not duplicate rows
+        conn = ledger.connect(self.db)
         q = lambda sql: conn.execute(sql).fetchall()  # noqa: E731
         self.assertEqual(q("SELECT unit_price, quantity FROM scan_rows WHERE scan_id LIKE '%:s1' ORDER BY unit_price"),
                          [(15, 200), (16, 40), (20, 500)])
@@ -143,7 +145,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(inv[("warband", "warband", 4306)], 50)
 
     def test_migrates_old_database(self):
-        conn = goldmine.sqlite3.connect(self.db)
+        conn = ledger.sqlite3.connect(self.db)
         conn.executescript("""
             CREATE TABLE characters (key TEXT PRIMARY KEY, name TEXT, realm TEXT, class TEXT,
                 faction TEXT, balance INTEGER, last_seen INTEGER, source_file TEXT);
@@ -153,37 +155,22 @@ class ImportTests(unittest.TestCase):
             CREATE VIEW transactions_view AS SELECT id FROM transactions;
         """)
         conn.close()
-        self.run_cli("sync", "--file", str(FIXTURE))
-        conn = goldmine.connect(self.db)
+        self.sync()
+        conn = ledger.connect(self.db)
         conn.execute("SELECT item_name FROM transactions_view").fetchall()
 
     def test_config_roundtrip(self):
-        import json
-        from unittest import mock
-        cfg_path = os.path.join(self.tmp.name, "config.toml")
         cfg = {"api": {"client_id": "abc", "client_secret": 'q"uote'},
                "app": {"collect_minutes": 20, "auto_collect": True},
                "market": [{"name": "m1", "region": "us", "namespace": "dynamic-us", "kind": "commodities"},
                           {"name": "m2", "region": "us", "namespace": "dynamic-us", "kind": "realm", "realm": "x"}]}
-        with mock.patch("sys.stdin", io.StringIO(json.dumps(cfg))):
-            self.run_cli("config", "set", "--config", cfg_path)
-        self.assertEqual(oct(os.stat(cfg_path).st_mode & 0o777), "0o600")
-        out = self.run_cli("config", "get", "--config", cfg_path)
-        self.assertEqual(json.loads(out), cfg)
+        self.assertEqual(tomllib.loads(ledger.dump_toml(cfg)), cfg)
 
     def test_money_format(self):
-        self.assertEqual(goldmine.fmt_gold(34), "34c")
-        self.assertEqual(goldmine.fmt_gold(-479), "-4s 79c")
-        self.assertEqual(goldmine.fmt_gold(10005, True), "+1g 00s 05c")
-        self.assertEqual(goldmine.fmt_gold(8077059418), "807,705g 94s 18c")
-
-    def test_discovery_finds_any_flavor_folder(self):
-        sv = Path(self.tmp.name, "WoW", "_forever_", "WTF", "Account", "ACCT", "SavedVariables")
-        sv.mkdir(parents=True)
-        (sv / "Goldmine.lua").write_bytes(FIXTURE.read_bytes())
-        (sv / "Goldmine.lua.bak").write_bytes(b"")
-        found = goldmine.find_saved_variables([str(Path(self.tmp.name, "WoW"))])
-        self.assertEqual(found, [sv / "Goldmine.lua"])
+        self.assertEqual(ledger.fmt_gold(34), "34c")
+        self.assertEqual(ledger.fmt_gold(-479), "-4s 79c")
+        self.assertEqual(ledger.fmt_gold(10005, True), "+1g 00s 05c")
+        self.assertEqual(ledger.fmt_gold(8077059418), "807,705g 94s 18c")
 
 
 if __name__ == "__main__":

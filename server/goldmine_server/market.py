@@ -23,8 +23,7 @@ from dataclasses import dataclass, field
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import store  # noqa: E402
+from . import store
 
 TOKEN_URL = "https://oauth.battle.net/token"
 API_HOST = "https://{region}.api.blizzard.com"

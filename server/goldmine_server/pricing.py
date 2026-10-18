@@ -23,7 +23,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-import store
+from . import store
 
 AH_CUT = 0.05  # auction house takes 5% of the sale price
 

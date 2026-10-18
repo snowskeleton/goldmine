@@ -6,9 +6,7 @@ import threading
 import time
 from collections import deque
 
-from . import db, settings
-
-import market  # noqa: E402
+from . import db, market, settings
 
 
 def load_config() -> dict:

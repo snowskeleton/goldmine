@@ -11,11 +11,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import goldmine  # noqa: E402
-import market  # noqa: E402
-import store  # noqa: E402
-import pricing  # noqa: E402
-import svparse  # noqa: E402
+from goldmine_server import ledger, market, pricing, store, svparse  # noqa: E402
+
 
 HOUR = 3600
 NOW = int(time.time()) // HOUR * HOUR - 6 * HOUR  # recent, so default 72h windows include it
@@ -30,7 +27,7 @@ class PricingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "gm.sqlite")
-        self.conn = goldmine.connect(self.db)
+        self.conn = ledger.connect(self.db)
         market.ensure_schema(self.conn)
         # 5 hourly snapshots: linen ~15c, bolts ~100c with one dumped bolt at 40c in the last one.
         for h in range(5):
@@ -100,7 +97,7 @@ class MultiGameTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "gm.sqlite")
-        self.conn = goldmine.connect(self.db)
+        self.conn = ledger.connect(self.db)
         market.ensure_schema(self.conn)
         c = self.conn
         c.executemany("INSERT INTO markets (name, region, namespace, kind, game, realms) VALUES (?, 'us', ?, ?, ?, ?)", [
@@ -141,7 +138,7 @@ class MultiGameTests(unittest.TestCase):
 
     def test_push_keeps_games_separate(self):
         with redirect_stdout(io.StringIO()):
-            goldmine.push(self.conn, self.args, cfg={})
+            ledger.push(self.conn, self.args, cfg={})
         data = svparse.parse_file(self.args.addon_data)["Goldmine_Data"]
         by_name = {s["name"]: s for s in data["sets"]}
         self.assertNotIn("us-stormrage", by_name)  # no characters there

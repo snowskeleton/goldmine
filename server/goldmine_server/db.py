@@ -2,7 +2,7 @@
 per-user game databases.
 
 Per-user reports run on a connection to the shared market DB with the user's game DB attached
-as schema "u". Table names don't overlap between the two, so the desktop code's unqualified
+as schema "u". Table names don't overlap between the two, so the ledger and pricing code's unqualified
 queries (transactions, characters, markets, item_states, ...) resolve to the right file.
 """
 
@@ -15,10 +15,8 @@ import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from . import settings
+from . import ledger, market, settings
 
-import goldmine  # noqa: E402  (desktop module, on sys.path via settings)
-import market  # noqa: E402
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -103,7 +101,7 @@ def user_db_path(user_id: int):
 def user_conn(user_id: int) -> sqlite3.Connection:
     """Market DB with the user's game DB attached: what reports and imports run on."""
     path = user_db_path(user_id)
-    goldmine.connect(str(path)).close()  # create/migrate the game tables in the user's file
+    ledger.connect(str(path)).close()  # create/migrate the game tables in the user's file
     conn = market_conn()
     conn.execute("ATTACH DATABASE ? AS u", (str(path),))
     return conn

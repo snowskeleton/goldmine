@@ -7,10 +7,10 @@ import time
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import goldmine  # noqa: E402
-import market  # noqa: E402
+from goldmine_server import ledger, market  # noqa: E402
+
 
 HOUR = 3600
 
@@ -49,7 +49,7 @@ class FakeClient:
 class CollectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.conn = goldmine.connect(os.path.join(self.tmp.name, "gm.sqlite"))
+        self.conn = ledger.connect(os.path.join(self.tmp.name, "gm.sqlite"))
         market.ensure_schema(self.conn)
 
     def tearDown(self):

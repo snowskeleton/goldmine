@@ -1,4 +1,4 @@
-"""Per-user operations, reusing the desktop code: game-data import, addon data, reports, status."""
+"""Per-user operations: game-data import, addon data, reports, CSV export, status."""
 
 from __future__ import annotations
 
@@ -11,12 +11,8 @@ from contextlib import redirect_stdout
 
 from fastapi import HTTPException
 
-from . import db, settings
+from . import db, ledger, pricing, settings, svparse
 from .collector import load_config
-
-import goldmine  # noqa: E402
-import pricing  # noqa: E402
-import svparse  # noqa: E402
 
 # The report functions print to stdout; redirect_stdout is process-wide, so they run one at a time.
 _report_lock = threading.Lock()
@@ -41,11 +37,11 @@ def run_report(user_id: int, fn, **kw) -> str:
 
 
 REPORTS = {
-    "crafts": goldmine.crafts_cmd,
-    "deals": goldmine.deals_cmd,
-    "summary": goldmine.summary,
-    "price": goldmine.price_cmd,
-    "timing": goldmine.timing_cmd,
+    "crafts": ledger.crafts_cmd,
+    "deals": ledger.deals_cmd,
+    "summary": ledger.summary,
+    "price": ledger.price_cmd,
+    "timing": ledger.timing_cmd,
 }
 
 
@@ -56,6 +52,16 @@ def report(user_id: int, kind: str, **kw) -> str:
     if kind in ("price", "timing") and not kw.get("item"):
         raise HTTPException(400, "item is required")
     return run_report(user_id, fn, **kw)
+
+
+def export_csv(user_id: int, **filters) -> str:
+    conn = db.user_conn(user_id)
+    try:
+        buf = io.StringIO()
+        ledger.write_csv(conn, buf, **filters)
+        return buf.getvalue()
+    finally:
+        conn.close()
 
 
 def import_saved_variables(user_id: int, body: bytes, encoding: str | None, source: str) -> dict:
@@ -71,7 +77,7 @@ def import_saved_variables(user_id: int, body: bytes, encoding: str | None, sour
         raise HTTPException(400, "no GoldmineDB table in upload")
     conn = db.user_conn(user_id)
     try:
-        new, total = goldmine.import_data(conn, data, source[:200])
+        new, total = ledger.import_data(conn, data, source[:200])
     finally:
         conn.close()
     return {"new": new, "total": total}
@@ -90,7 +96,7 @@ def addon_data(user_id: int) -> bytes:
             return out.read_bytes()
         args = cli_args(conn, addon_data=str(out))
         with _report_lock, redirect_stdout(io.StringIO()):
-            goldmine.push(conn, args, load_config())
+            ledger.push(conn, args, load_config())
         stamp_file.write_text(stamp)
         return out.read_bytes()
     finally:
@@ -100,13 +106,13 @@ def addon_data(user_id: int) -> bytes:
 def timing_json(user_id: int, item: str) -> dict:
     conn = db.user_conn(user_id)
     try:
-        ids = goldmine.resolve_items(conn, item)
+        ids = ledger.resolve_items(conn, item)
         if not ids:
             raise HTTPException(404, "no matching item")
         item_id = ids[0]
         games = dict(conn.execute("SELECT name, game FROM markets"))
         profiles = pricing.timing(conn, item_id)
-        name = goldmine.item_names(conn, [item_id], cli_args(conn))[item_id]
+        name = ledger.item_names(conn, [item_id], cli_args(conn))[item_id]
         # Buckets stay in UTC (offset 0); clients rotate them into their own local time.
         return {"item_id": item_id, "name": name, "utc_offset_hours": 0,
                 "markets": [{"market": m, "game": games.get(m), "buckets": b} for m, b in profiles.items()]}

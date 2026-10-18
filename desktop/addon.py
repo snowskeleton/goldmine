@@ -1,8 +1,9 @@
-"""Install and update the Goldmine addon in WoW's AddOns folders; package it for the server.
+"""Install and update the Goldmine addon in WoW's AddOns folders, from releases the server hands out.
 
-A release is identified by a content hash of the addon's files (not the .toc version), so any
-change to the shipped files is an update even if nobody bumped `## Version:`. Data.lua is
-generated on each machine by `push`; it's never shipped and survives updates.
+A release is identified by a content hash of the addon's files, so any change to the shipped files
+is an update even if nobody bumped `## Version:`. content_hash must match the server's
+(server/goldmine_server/addon.py); both are pinned to the same test vector. Data.lua is written
+per machine by `push`, never shipped, and survives updates.
 
 Layout: <WoW>/<_flavor_>/Interface/AddOns/Goldmine. A Goldmine folder that is a symlink (a
 development checkout) is reported as linked and left alone unless forced.
@@ -21,10 +22,7 @@ import zipfile
 from pathlib import Path
 
 NAME = "Goldmine"
-GENERATED = {"Data.lua"}  # written by push, per machine
-# The addon shipped next to this module: repo/addon/Goldmine, or Resources/addon/Goldmine in the app.
-BUNDLED = Path(__file__).resolve().parent.parent / "addon" / NAME
-_ZIP_TIME = (2020, 1, 1, 0, 0, 0)  # fixed timestamps so the same files always zip to the same bytes
+GENERATED = {"Data.lua"}  # written by push, per machine; never shipped
 
 
 class AddonError(RuntimeError):
@@ -65,18 +63,6 @@ def toc_version(src: Path) -> str | None:
 def describe(src: Path) -> dict | None:
     digest = content_hash(src)
     return None if digest is None else {"version": toc_version(src), "hash": digest}
-
-
-def package(src: Path) -> bytes:
-    """Zip the addon as Goldmine/<files>, deterministically."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in addon_files(src):
-            info = zipfile.ZipInfo(f"{NAME}/{rel.as_posix()}", _ZIP_TIME)
-            info.external_attr = 0o644 << 16
-            info.compress_type = zipfile.ZIP_DEFLATED
-            zf.writestr(info, (Path(src) / rel).read_bytes())
-    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

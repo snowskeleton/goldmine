@@ -23,13 +23,12 @@ from cryptography.hazmat.primitives import hashes  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from goldmine_server import db, settings  # noqa: E402
+from goldmine_server import db, settings, store  # noqa: E402
 from goldmine_server.app import app  # noqa: E402
 
-import store  # noqa: E402  (desktop module)
 
 ORIGIN = "http://testserver"
-FIXTURE = Path(__file__).resolve().parents[2] / "desktop" / "tests" / "fixtures" / "Goldmine.lua"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "Goldmine.lua"
 
 
 def b64(data: bytes) -> str:
@@ -275,12 +274,25 @@ class ServerFlow(unittest.TestCase):
         self.assertEqual(self.admin.get("/reports?kind=crafts").status_code, 200)
         self.assertEqual(self.admin.get("/web/timing?item=2589").json()["item_id"], 2589)
 
+    def test_11b_export_csv_and_timing_offset(self):
+        h = {"authorization": f"Bearer {self.key}"}
+        api = TestClient(app)
+        rows = api.get("/api/v1/export.csv", headers=h).text.splitlines()
+        self.assertTrue(rows[0].startswith("id,character,time"))
+        self.assertGreater(len(rows), 5)
+        sales = api.get("/api/v1/export.csv?source=auction_sale", headers=h).text.splitlines()
+        self.assertEqual(len(sales), 2)
+        self.assertIn("auction_sale", sales[1])
+        self.assertEqual(api.get("/api/v1/export.csv").status_code, 401)
+        text = api.get("/api/v1/report/timing?item=2589&utc_offset=-5", headers=h).text
+        self.assertIn("UTC-5", text)
+
     def test_12_settings_and_markets(self):
         r = self.admin.post("/settings", data={"client_id": "abc", "client_secret": "s3cret", "collect_minutes": 30,
                                                "auto_collect": "1"})
         self.assertEqual(r.status_code, 303)
         self.admin.post("/settings", data={"client_id": "abc", "client_secret": "", "collect_minutes": 30})
-        import market
+        from goldmine_server import market
         cfg = market.load_config(settings.CONFIG)
         self.assertEqual(cfg["api"]["client_secret"], "s3cret")  # blank keeps the old secret
         self.assertFalse(cfg["app"]["auto_collect"])
@@ -300,7 +312,7 @@ class ServerFlow(unittest.TestCase):
     def test_12b_browse_realms_namespace(self):
         from unittest import mock
         from goldmine_server import app as app_module
-        with mock.patch.object(app_module.goldmine, "list_realms", return_value=[]) as lr:
+        with mock.patch.object(app_module.ledger, "list_realms", return_value=[]) as lr:
             self.admin.get("/markets", params={"region": "eu", "game": "classic"})
             self.assertEqual(lr.call_args[0][1:], ("eu", "dynamic-classic-eu"))
             self.admin.get("/markets", params={"region": "us", "game": "other", "namespace": " dynamic-foo-us "})
@@ -312,7 +324,7 @@ class ServerFlow(unittest.TestCase):
             lr.assert_not_called()
 
     def test_12c_api_namespaces(self):
-        import market
+        from goldmine_server import market
         api = TestClient(app)
         r = api.get("/api/v1/namespaces", headers={"authorization": f"Bearer {self.key}"})
         self.assertEqual(r.json(), market.NAMESPACE_GAMES)

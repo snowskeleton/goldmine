@@ -14,12 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, releases, services, settings
+from . import auth, db, ledger, market, releases, services, settings
 from .auth import User
 from .collector import collector, load_config
 
-import goldmine  # noqa: E402
-import market  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 VERSION = "0.2.0"
@@ -51,7 +49,7 @@ app.add_middleware(SessionMiddleware, secret_key=secret_key(), session_cookie="g
                    https_only=bool(settings.ORIGIN and settings.ORIGIN.startswith("https")))
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
-templates.env.globals.update(fmt_gold=goldmine.fmt_gold, app_name=settings.APP_NAME, version=VERSION)
+templates.env.globals.update(fmt_gold=ledger.fmt_gold, app_name=settings.APP_NAME, version=VERSION)
 
 
 def ago(ts) -> str:
@@ -205,7 +203,7 @@ def web_timing(request: Request, item: str, user: User = Depends(auth.require_us
 def save_config(cfg: dict) -> None:
     settings.DATA.mkdir(parents=True, exist_ok=True)
     tmp = settings.CONFIG.with_suffix(".tmp")
-    tmp.write_text(goldmine.dump_toml(cfg))
+    tmp.write_text(ledger.dump_toml(cfg))
     tmp.chmod(0o600)
     market.load_config(tmp)  # refuse to save something that doesn't parse
     tmp.replace(settings.CONFIG)
@@ -226,7 +224,7 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
         api = cfg.get("api") or {}
         try:
             client = market.Client(api.get("client_id", ""), api.get("client_secret", ""), cache_dir=settings.CACHE_DIR)
-            realms = goldmine.list_realms(client, region, namespace)
+            realms = ledger.list_realms(client, region, namespace)
         except Exception as exc:
             error = str(exc)
     conn = db.market_conn()
@@ -430,9 +428,18 @@ def api_status(user: User = Depends(auth.client_user)):
 
 
 @app.get("/api/v1/report/{kind}")
-def api_report(kind: str, item: str | None = None, days: int | None = None, limit: int = 40,
+def api_report(kind: str, item: str | None = None, days: int | None = None, limit: int = 40, utc_offset: int = 0,
                user: User = Depends(auth.client_user)):
-    return PlainTextResponse(services.report(user.id, kind, item=item, days=days, limit=limit))
+    extra = {"utc_offset": max(-12, min(utc_offset, 14))} if kind == "timing" else {}
+    return PlainTextResponse(services.report(user.id, kind, item=item, days=days, limit=limit, **extra))
+
+
+@app.get("/api/v1/export.csv")
+def api_export(since: int | None = None, until: int | None = None, source: str | None = None,
+               char: str | None = None, user: User = Depends(auth.client_user)):
+    """The user's ledger as CSV. since/until are unix timestamps."""
+    return Response(services.export_csv(user.id, since=since, until=until, source=source, char=char),
+                    media_type="text/csv; charset=utf-8")
 
 
 @app.get("/api/v1/namespaces")

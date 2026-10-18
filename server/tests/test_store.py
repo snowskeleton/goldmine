@@ -5,11 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import goldmine  # noqa: E402
-import market  # noqa: E402
-import store  # noqa: E402
+from goldmine_server import ledger, market, store  # noqa: E402
+
 
 HOUR = 3600
 DAY = 86400
@@ -30,7 +29,7 @@ def gear(aid, item, buyout, bonus=None, tl="VERY_LONG"):
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.conn = goldmine.connect(os.path.join(self.tmp.name, "gm.sqlite"))
+        self.conn = ledger.connect(os.path.join(self.tmp.name, "gm.sqlite"))
         market.ensure_schema(self.conn)
 
     def tearDown(self):
@@ -136,7 +135,7 @@ class StoreTests(unittest.TestCase):
             INSERT INTO snapshots (market, fetched_at, last_modified, auctions) VALUES ('m', 1, 1, 1);
         """)
         conn.close()
-        conn = goldmine.connect(path)
+        conn = ledger.connect(path)
         market.ensure_schema(conn)
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertFalse(tables & {"prices", "last_listings"})

@@ -14,9 +14,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import settings
-
-import addon  # noqa: E402  (desktop module)
+from . import addon, settings
 
 PLATFORMS = ("macos", "windows")
 MAX_APP = 200 * 1024 * 1024
