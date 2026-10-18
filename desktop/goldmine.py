@@ -9,6 +9,7 @@
   goldmine.py price "Linen Cloth"       # latest + recent prices for an item
   goldmine.py realms us dynamic-us      # list connected realms (slugs for the config)
   goldmine.py probe us                  # which API namespaces exist (find Forever's)
+  goldmine.py namespaces eu             # game versions to browse, with their namespaces
   goldmine.py crafts                    # profit per craft for every recipe your characters know
   goldmine.py deals                     # items listed well below market value that sell
   goldmine.py push                      # write prices/crafts/deals into the addon (Data.lua)
@@ -842,10 +843,29 @@ def realms_cmd(args) -> int:
     return 0
 
 
-PROBE_NAMESPACES = ["dynamic-{r}", "dynamic-classic-{r}", "dynamic-classic1x-{r}", "dynamic-classicann-{r}",
+PROBE_NAMESPACES = [g["prefix"] + "-{r}" for g in market.NAMESPACE_GAMES] + [
                     # Guesses for Forever; add more with --namespace once Blizzard documents it.
                     "dynamic-forever-{r}", "dynamic-classicforever-{r}", "dynamic-classicfor-{r}",
                     "dynamic-wowforever-{r}", "dynamic-classicplus-{r}"]
+
+
+def namespaces_cmd(args) -> int:
+    """The game versions to offer when browsing realms: the server's list if one is configured
+    (so new game versions show up without updating this machine), else the built-in one."""
+    games = market.NAMESPACE_GAMES
+    rem = remote_for(args)
+    if rem is not None:
+        try:
+            games = rem.get_json("/api/v1/namespaces")
+        except remote.RemoteError as exc:
+            print(f"namespaces: using the built-in list ({exc})", file=sys.stderr)
+    rows = [{**g, "namespace": f"{g['prefix']}-{args.region}"} for g in games]
+    if args.json:
+        print(json.dumps(rows))
+        return 0
+    for r in rows:
+        print(f"{r['namespace']:<28} {r['label']}{'' if r['auctions'] else ' (no AH data)'}")
+    return 0
 
 
 def probe_cmd(args) -> int:
@@ -961,6 +981,12 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     add_config(p)
     p.set_defaults(fn=realms_cmd)
+
+    p = sub.add_parser("namespaces", help="list the game versions to browse realms in, and their namespaces")
+    p.add_argument("region", nargs="?", default="us")
+    p.add_argument("--json", action="store_true")
+    add_config(p)
+    p.set_defaults(fn=namespaces_cmd)
 
     p = sub.add_parser("probe", help="check which API namespaces exist in a region")
     p.add_argument("region")

@@ -253,6 +253,27 @@ class ServerFlow(unittest.TestCase):
         self.assertEqual(len(market.load_config(settings.CONFIG)["market"]), 1)
         self.assertIn("us-commodities", self.admin.get("/markets").text)
 
+    def test_12b_browse_realms_namespace(self):
+        from unittest import mock
+        from goldmine_server import app as app_module
+        with mock.patch.object(app_module.goldmine, "list_realms", return_value=[]) as lr:
+            self.admin.get("/markets", params={"region": "eu", "game": "classic"})
+            self.assertEqual(lr.call_args[0][1:], ("eu", "dynamic-classic-eu"))
+            self.admin.get("/markets", params={"region": "us", "game": "other", "namespace": " dynamic-foo-us "})
+            self.assertEqual(lr.call_args[0][1:], ("us", "dynamic-foo-us"))
+            text = self.admin.get("/markets", params={"region": "us", "namespace": "dynamic-classic1x-us"}).text
+            self.assertIn('value="classic1x" selected', text)  # old ?namespace= links preselect the game
+            lr.reset_mock()
+            self.admin.get("/markets")
+            lr.assert_not_called()
+
+    def test_12c_api_namespaces(self):
+        import market
+        api = TestClient(app)
+        r = api.get("/api/v1/namespaces", headers={"authorization": f"Bearer {self.key}"})
+        self.assertEqual(r.json(), market.NAMESPACE_GAMES)
+        self.assertEqual(api.get("/api/v1/namespaces").status_code, 401)
+
     def test_13_cross_origin_post_refused(self):
         r = self.admin.post("/clients", data={"name": "x"}, headers={"origin": "https://evil.example"})
         self.assertEqual(r.status_code, 403)

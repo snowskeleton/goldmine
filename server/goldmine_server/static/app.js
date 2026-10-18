@@ -126,3 +126,12 @@ function filterRows(input, tableId) {
     if (i > 0) tr.hidden = q && !tr.textContent.toLowerCase().includes(q);
   });
 }
+
+function toggleOther(select) {
+  const other = document.getElementById("other-namespace");
+  const on = select.value === "other";
+  other.hidden = !on;
+  other.disabled = !on;
+  other.required = on;
+  if (on) other.focus();
+}

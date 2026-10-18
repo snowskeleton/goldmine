@@ -243,13 +243,18 @@ struct RealmBrowser: View {
     @EnvironmentObject var engine: Engine
     @Environment(\.dismiss) private var dismiss
     @State private var region = "us"
-    @State private var namespace = "dynamic-us"
+    @State private var games: [NamespaceOption] = []
+    @State private var game = "retail"
+    @State private var customNamespace = ""
     @State private var realms: [RealmInfo] = []
     @State private var loading = false
     @State private var filter = ""
     @State private var selection: RealmInfo.ID?
 
-    private let namespaces = ["dynamic-us", "dynamic-classic-us", "dynamic-classic1x-us", "dynamic-classicann-us"]
+    private var namespace: String {
+        if let g = games.first(where: { $0.game == game }) { return g.namespace(region: region) }
+        return customNamespace.trimmingCharacters(in: .whitespaces)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -258,17 +263,24 @@ struct RealmBrowser: View {
                 Picker("Region", selection: $region) {
                     ForEach(["us", "eu", "kr", "tw"], id: \.self) { Text($0) }
                 }.frame(width: 120)
-                TextField("namespace", text: $namespace).frame(width: 200)
-                Menu("Known") {
-                    ForEach(namespaces, id: \.self) { ns in
-                        Button(ns) { namespace = ns.replacingOccurrences(of: "-us", with: "-\(region)") }
-                    }
-                }.frame(width: 80)
+                Picker("Game", selection: $game) {
+                    ForEach(games) { g in Text(g.auctions ? g.label : "\(g.label) (no AH data)").tag(g.game) }
+                    Text("Other…").tag("other")
+                }.frame(width: 240)
+                .help(game == "other" ? "Type any API namespace" : namespace)
+                if game == "other" {
+                    TextField("dynamic-\(region)", text: $customNamespace).frame(width: 170)
+                }
                 Button(loading ? "Loading…" : "Load") {
                     Task { loading = true; realms = await engine.loadRealms(region: region, namespace: namespace); loading = false }
-                }.disabled(loading)
+                }.disabled(loading || namespace.isEmpty)
                 TextField("Filter", text: $filter)
             }
+            HStack(spacing: 4) {
+                Text("Namespace: \(namespace.isEmpty ? "—" : namespace) · Blizzard docs:")
+                Link("retail", destination: URL(string: "https://community.developer.battle.net/documentation/world-of-warcraft/guides/namespaces")!)
+                Link("classic", destination: URL(string: "https://community.developer.battle.net/documentation/world-of-warcraft-classic/guides/namespaces")!)
+            }.font(.caption).foregroundStyle(.secondary)
             Table(filtered, selection: $selection) {
                 TableColumn("Realm") { Text($0.name ?? "") }
                 TableColumn("Slug") { Text($0.slug ?? "") }
@@ -298,6 +310,10 @@ struct RealmBrowser: View {
         }
         .padding()
         .frame(width: 760, height: 480)
+        .task {
+            games = await engine.loadNamespaces()
+            if games.isEmpty { game = "other" }  // couldn't get the list: fall back to typing a namespace
+        }
     }
 
     private var filtered: [RealmInfo] {

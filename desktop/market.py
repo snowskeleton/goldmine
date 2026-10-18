@@ -173,6 +173,16 @@ def ensure_schema(conn) -> None:
     conn.execute(f"PRAGMA main.user_version = {SCHEMA_VERSION}")
 
 
+# The game versions offered when browsing realms (the server's web page and API, and the Mac app via
+# the server). The namespace is prefix + "-" + region. Add new game versions here.
+NAMESPACE_GAMES = [
+    {"game": "retail", "label": "Retail", "prefix": "dynamic", "auctions": True},
+    {"game": "classic", "label": "Mists Classic", "prefix": "dynamic-classic", "auctions": True},
+    {"game": "classic1x", "label": "Classic Era", "prefix": "dynamic-classic1x", "auctions": False},
+    {"game": "classicann", "label": "Anniversary", "prefix": "dynamic-classicann", "auctions": False},
+]
+
+
 def game_for(namespace: str, override: str | None = None) -> str:
     """dynamic-us -> retail, dynamic-classic-us -> classic, dynamic-classic1x-eu -> classic1x."""
     if override:

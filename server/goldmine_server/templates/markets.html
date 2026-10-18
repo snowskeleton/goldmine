@@ -48,15 +48,18 @@
     <h2>Browse realms</h2>
     <form method="get" action="/markets" class="row">
       <select name="region">{% for r in ['us','eu','kr','tw'] %}<option {{ 'selected' if r == region }}>{{ r }}</option>{% endfor %}</select>
-      <input name="namespace" value="{{ namespace }}" placeholder="dynamic-us" list="namespaces" required>
-      <datalist id="namespaces">
-        <option value="dynamic-{{ region }}">retail</option>
-        <option value="dynamic-classic-{{ region }}">Mists Classic</option>
-        <option value="dynamic-classic1x-{{ region }}">Classic Era (no AH data)</option>
-        <option value="dynamic-classicann-{{ region }}">Anniversary (no AH data)</option>
-      </datalist>
+      <select name="game" onchange="toggleOther(this)" title="Game version (picks the API namespace)">
+        {% for g in namespace_games %}<option value="{{ g.game }}" {{ 'selected' if g.game == game }}>{{ g.label }}{{ '' if g.auctions else ' (no AH data)' }}</option>{% endfor %}
+        <option value="other" {{ 'selected' if game == 'other' }}>Other…</option>
+      </select>
+      <input name="namespace" id="other-namespace" value="{{ namespace if game == 'other' }}" placeholder="dynamic-{{ region }}"
+             {{ 'hidden disabled' if game != 'other' else 'required' }}>
       <button>Load</button>
     </form>
+    <p class="muted">The game version sets the API namespace, e.g. <code>dynamic-classic-{{ region }}</code>.
+      Use Other for any namespace not listed. See Blizzard's namespace docs:
+      <a href="https://community.developer.battle.net/documentation/world-of-warcraft/guides/namespaces" target="_blank" rel="noopener">retail</a>,
+      <a href="https://community.developer.battle.net/documentation/world-of-warcraft-classic/guides/namespaces" target="_blank" rel="noopener">classic</a>.</p>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     {% if namespace and not error %}
       <form method="post" action="/markets/add" class="inline">

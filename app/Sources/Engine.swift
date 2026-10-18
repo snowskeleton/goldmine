@@ -128,6 +128,16 @@ struct RealmInfo: Codable, Identifiable, Hashable {
     let category: String?
 }
 
+/// A game version to browse realms in (from the server via `goldmine.py namespaces`).
+struct NamespaceOption: Codable, Identifiable, Hashable {
+    var id: String { game }
+    let game: String
+    let label: String
+    let prefix: String
+    let auctions: Bool
+    func namespace(region: String) -> String { "\(prefix)-\(region)" }
+}
+
 func formatGold(_ copper: Int) -> String {
     let sign = copper < 0 ? "-" : ""
     let c = abs(copper)
@@ -340,6 +350,13 @@ final class Engine: ObservableObject {
         let (code, out) = await run(["realms", region, namespace, "--json"], label: "realms", quiet: true)
         guard code == 0, let data = out.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([RealmInfo].self, from: data)) ?? []
+    }
+
+    /// Game versions for the realm browser: the server's list when one is configured, else goldmine.py's built-in one.
+    func loadNamespaces() async -> [NamespaceOption] {
+        let (code, out) = await run(["namespaces", "--json"], label: "realms", quiet: true)
+        guard code == 0, let data = out.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([NamespaceOption].self, from: data)) ?? []
     }
 
     // MARK: - Config

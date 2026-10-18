@@ -212,7 +212,14 @@ def save_config(cfg: dict) -> None:
 
 
 @app.get("/markets", response_class=HTMLResponse)
-def markets_page(request: Request, region: str = "us", namespace: str = "", user: User = Depends(auth.require_admin)):
+def markets_page(request: Request, region: str = "us", game: str = "", namespace: str = "",
+                 user: User = Depends(auth.require_admin)):
+    prefixes = {g["game"]: g["prefix"] for g in market.NAMESPACE_GAMES}
+    namespace = namespace.strip()
+    if game in prefixes:
+        namespace = f"{prefixes[game]}-{region}"
+    elif not game:  # plain ?namespace= links still work; preselect the matching game
+        game = next((k for k, p in prefixes.items() if namespace == f"{p}-{region}"), "other" if namespace else "retail")
     cfg = load_config()
     realms, error = [], None
     if namespace:
@@ -228,7 +235,8 @@ def markets_page(request: Request, region: str = "us", namespace: str = "", user
     finally:
         conn.close()
     return page(request, "markets.html", user, markets=cfg.get("market", []), status=status, realms=realms,
-                region=region, namespace=namespace, error=error, game_for=market.game_for)
+                region=region, namespace=namespace, game=game, namespace_games=market.NAMESPACE_GAMES,
+                error=error, game_for=market.game_for)
 
 
 @app.post("/markets/add")
@@ -410,6 +418,12 @@ def api_status(user: User = Depends(auth.client_user)):
 def api_report(kind: str, item: str | None = None, days: int | None = None, limit: int = 40,
                user: User = Depends(auth.client_user)):
     return PlainTextResponse(services.report(user.id, kind, item=item, days=days, limit=limit))
+
+
+@app.get("/api/v1/namespaces")
+def api_namespaces(user: User = Depends(auth.client_user)):
+    """The game versions to offer when browsing realms; namespace = prefix + "-" + region."""
+    return market.NAMESPACE_GAMES
 
 
 @app.get("/api/v1/timing")
