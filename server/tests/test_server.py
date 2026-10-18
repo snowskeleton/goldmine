@@ -185,6 +185,50 @@ class ServerFlow(unittest.TestCase):
         me = api.get("/api/v1/me", headers={"authorization": f"Bearer {key}"}).json()
         self.assertEqual((me["user"], me["admin"]), ("snow", True))
 
+    def test_08b_updates(self):
+        import io
+        import plistlib
+        import zipfile
+        h = {"authorization": f"Bearer {self.key}"}
+        api = TestClient(app)
+        self.assertEqual(api.get("/api/v1/updates").status_code, 401)
+        m = api.get("/api/v1/updates", headers=h).json()
+        self.assertEqual(m["app"], {})
+        self.assertEqual(len(m["addon"]["hash"]), 64)
+        z = api.get(m["addon"]["url"], headers=h).content
+        self.assertEqual(hashlib.sha256(z).hexdigest(), m["addon"]["sha256"])
+        names = zipfile.ZipFile(io.BytesIO(z)).namelist()
+        self.assertIn("Goldmine/Goldmine.toc", names)
+        self.assertNotIn("Goldmine/Data.lua", names)
+
+        def app_zip(build, bundle="net.snowskeleton.goldmine"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("Goldmine.app/Contents/Info.plist", plistlib.dumps(
+                    {"CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.3.0", "CFBundleVersion": str(build)}))
+                zf.writestr("Goldmine.app/Contents/MacOS/Goldmine", b"binary")
+            return buf.getvalue()
+
+        up = lambda data, **kw: api.post("/api/v1/releases/app", content=data, headers=h, params=kw)
+        self.assertEqual(up(app_zip(5, bundle="com.evil")).status_code, 400)
+        self.assertEqual(up(b"not a zip").status_code, 400)
+        r = up(app_zip(5), notes="first")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(up(app_zip(5)).status_code, 409)  # builds only go forward
+        self.assertEqual(up(app_zip(6)).status_code, 200)
+        self.assertEqual(up(app_zip(7)).status_code, 200)
+        rel = api.get("/api/v1/updates", headers=h).json()["app"]["macos"]
+        self.assertEqual((rel["version"], rel["build"]), ("0.3.0", 7))
+        z = api.get(rel["url"], headers=h).content
+        self.assertEqual(hashlib.sha256(z).hexdigest(), rel["sha256"])
+        kept = sorted(p.name for p in (settings.RELEASES / "app" / "macos").glob("*.zip"))
+        self.assertEqual(kept, ["Goldmine-macos-6.zip", "Goldmine-macos-7.zip"])
+        page = self.admin.get("/clients").text
+        self.assertIn("/download/app/macos", page)
+        self.assertEqual(self.admin.get("/download/app/macos").content, z)
+        self.assertEqual(self.admin.get("/download/addon").status_code, 200)
+        self.assertEqual(TestClient(app, follow_redirects=False).get("/download/addon").status_code, 303)
+
     def test_09_upload_game_data(self):
         h = {"authorization": f"Bearer {self.key}", "content-encoding": "gzip"}
         api = TestClient(app)

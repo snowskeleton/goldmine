@@ -15,6 +15,10 @@ MARKET_DB = DATA / "market.sqlite"   # shared AH data
 SERVER_DB = DATA / "server.sqlite"   # users, passkeys, invites, client keys
 USERS_DIR = DATA / "users"           # users/<id>/game.sqlite: ledger, scans, recipes, inventory
 CACHE_DIR = DATA / "cache"
+RELEASES = DATA / "releases"         # uploaded desktop app builds, releases/app/<platform>/
+# The addon this server hands out for install/update (copied into the image next to desktop/).
+ADDON_DIR = Path(os.environ.get("GOLDMINE_ADDON", LIB.parent / "addon" / "Goldmine")).resolve()
+APP_BUNDLE_ID = "net.snowskeleton.goldmine"
 
 # Public origin, e.g. https://gold.example.com. Passkeys are bound to it. If unset, it's
 # derived from each request (fine for localhost; set it behind a reverse proxy).

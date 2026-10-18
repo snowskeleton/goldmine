@@ -15,6 +15,24 @@
 {% endif %}
 
 <section class="card">
+  <h2>Downloads</h2>
+  <p class="muted">Once the app is connected, it keeps itself and the addon up to date from this server.</p>
+  <table>
+    {% for platform, rel in downloads.app.items() %}
+    <tr><td>Goldmine app ({{ 'Mac' if platform == 'macos' else platform|capitalize }})</td>
+      <td>{{ rel.version }} <span class="muted small">build {{ rel.build }} · {{ rel.uploaded|ago }}</span></td>
+      <td><a href="/download/app/{{ platform }}">Download</a></td></tr>
+    {% else %}
+    <tr><td>Goldmine app</td><td colspan="2" class="muted">No release uploaded yet (run <code>app/build.sh --release</code>).</td></tr>
+    {% endfor %}
+    {% if downloads.addon %}
+    <tr><td>WoW addon</td><td>{{ downloads.addon.version }} <span class="muted small">{{ downloads.addon.hash[:10] }}</span></td>
+      <td><a href="/download/addon">Download</a></td></tr>
+    {% endif %}
+  </table>
+</section>
+
+<section class="card">
   <form method="post" action="/clients" class="row">
     <input name="name" placeholder="Key name, e.g. MacBook" maxlength="60">
     <button class="primary">Generate connection URL</button>

@@ -2,5 +2,6 @@
 **/__pycache__
 **/data
 app/build
-addon
+addon/tests
+addon/Goldmine/Data.lua
 *.sqlite

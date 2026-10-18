@@ -6,6 +6,7 @@ struct MainView: View {
             StatusView().tabItem { Label("Status", systemImage: "gauge") }
             ReportsView().tabItem { Label("Reports", systemImage: "chart.bar") }
             MarketsView().tabItem { Label("Markets", systemImage: "building.columns") }
+            UpdatesView().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
@@ -387,9 +388,9 @@ struct SettingsView: View {
                 }
             }
             Section("Paths") {
-                TextField("Python 3.11+", text: $engine.pythonPath)
-                TextField("Goldmine folder", text: $engine.goldmineDir)
-                Text("Applied immediately; press Save to restart background work with them.")
+                TextField("Python 3.11+", text: $engine.pythonPath, prompt: Text("automatic: \(engine.python)"))
+                TextField("Goldmine folder", text: $engine.goldmineDir, prompt: Text("built in (development: a goldmine checkout)"))
+                Text("Leave both empty normally. Applied immediately; press Save to restart background work with them.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {

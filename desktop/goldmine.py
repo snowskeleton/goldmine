@@ -14,6 +14,8 @@
   goldmine.py deals                     # items listed well below market value that sell
   goldmine.py push                      # write prices/crafts/deals into the addon (Data.lua)
   goldmine.py timing "Linen Cloth"      # when an item sells: hour-of-week heatmap
+  goldmine.py addon status              # where the addon is installed, and whether it's current
+  goldmine.py addon install             # install or update the addon (from the server if one is set)
 
 The WoW client only writes SavedVariables on logout, /reload, or exit, so that's when new
 data appears. Imports are idempotent (keyed on entry id), so syncing repeatedly is safe,
@@ -26,15 +28,20 @@ import argparse
 import csv
 import datetime as dt
 import glob
+import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import addon  # noqa: E402
 import market  # noqa: E402
 import pricing  # noqa: E402
 import remote  # noqa: E402
@@ -47,7 +54,6 @@ DEFAULT_WOW_DIRS = [
     "C:/Program Files/World of Warcraft",
 ]
 DEFAULT_DB = os.environ.get("GOLDMINE_DB", os.path.expanduser("~/.goldmine/goldmine.sqlite"))
-DEFAULT_ADDON_DATA = Path(__file__).resolve().parent.parent / "addon" / "Goldmine" / "Data.lua"
 DEFAULT_CONFIG = os.environ.get("GOLDMINE_CONFIG", os.path.expanduser("~/.goldmine/config.toml"))
 
 SCHEMA = """
@@ -410,8 +416,12 @@ def remote_push(args, rem: remote.Remote) -> int:
     except remote.RemoteError as exc:
         print(f"addon data: FAILED: {exc}", file=sys.stderr)
         return 1
-    Path(args.addon_data).write_bytes(data)
-    print(f"wrote {args.addon_data} ({len(data) / 1024:.0f} KB from {rem.base}). /reload in game to load it.")
+    targets = addon_data_targets(args)
+    if not targets:
+        return 1
+    for t in targets:
+        t.write_bytes(data)
+        print(f"wrote {t} ({len(data) / 1024:.0f} KB from {rem.base}). /reload in game to load it.")
     return 0
 
 
@@ -730,12 +740,35 @@ def deals_cmd(args) -> int:
     return 0
 
 
+def wow_dirs(args) -> list[str]:
+    if getattr(args, "wow_dir", None):
+        return args.wow_dir
+    env = os.environ.get("GOLDMINE_WOW_DIR")
+    return [env] if env else DEFAULT_WOW_DIRS
+
+
+def addon_data_targets(args) -> list[Path]:
+    """--addon-data if given, else Data.lua in every installed copy of the addon."""
+    if getattr(args, "addon_data", None):
+        return [Path(args.addon_data)]
+    targets = addon.data_targets(wow_dirs(args))
+    if not targets:
+        print("The Goldmine addon isn't installed in any WoW folder; run `goldmine.py addon install` "
+              "(or pass --addon-data).", file=sys.stderr)
+    return targets
+
+
 def push(conn, args, cfg=None, client=None) -> None:
+    targets = addon_data_targets(args)
+    if not targets:
+        return
     exports = set_reports(conn, args, cfg)
-    n = pricing.write_addon_data(args.addon_data, exports)
-    size = os.path.getsize(args.addon_data) / 1024
-    print(f"wrote {args.addon_data} ({len(exports)} market sets, {n} item prices, {size:.0f} KB). "
-          "/reload in game to load it.")
+    n = pricing.write_addon_data(targets[0], exports)
+    for t in targets[1:]:
+        shutil.copyfile(targets[0], t)
+    size = os.path.getsize(targets[0]) / 1024
+    for t in targets:
+        print(f"wrote {t} ({len(exports)} market sets, {n} item prices, {size:.0f} KB). /reload in game to load it.")
 
 
 def push_cmd(args) -> int:
@@ -908,6 +941,162 @@ def price_cmd(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Addon install/update and app updates
+# ---------------------------------------------------------------------------
+
+APP_PLATFORM = {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)
+
+
+def addon_release(args) -> tuple[dict, callable]:
+    """The addon release to install: the server's if one is configured, else the bundled copy.
+    Returns (info, fetch) where fetch() returns the zip bytes."""
+    rem = remote_for(args)
+    if rem is not None:
+        info = rem.get_json("/api/v1/updates")["addon"]
+        info["source"] = rem.base
+        return info, lambda: rem.request("GET", info["url"])
+    info = addon.describe(addon.BUNDLED)
+    if info is None:
+        raise addon.AddonError(f"no bundled addon at {addon.BUNDLED}")
+    info["source"] = str(addon.BUNDLED)
+    return info, lambda: addon.package(addon.BUNDLED)
+
+
+def addon_cmd(args) -> int:
+    dirs = wow_dirs(args)
+    copies = addon.installed(dirs)
+    try:
+        release, fetch = addon_release(args)
+    except (remote.RemoteError, addon.AddonError) as exc:
+        if args.action == "install":
+            raise
+        release, fetch = {"error": str(exc)}, None
+    for c in copies:
+        c["current"] = bool(c["installed"] and c["hash"] == release.get("hash"))
+
+    if args.action == "status":
+        if args.json:
+            print(json.dumps({"available": release, "copies": copies, "wow_dirs": dirs}))
+            return 0
+        print(f"available: {release.get('version') or '?'} ({(release.get('hash') or '')[:10]}) from "
+              f"{release.get('source') or release.get('error')}")
+        if not copies:
+            print("no WoW flavor folders found under:", *dirs, sep="\n  ")
+        for c in copies:
+            state = ("linked to " + c["link_target"] if c["linked"] else
+                     "current" if c["current"] else "outdated" if c["installed"] else "not installed")
+            print(f"  {c['flavor']:<14} {c['version'] or '':<8} {state}   {c['path']}")
+        return 0
+
+    by_name = {c["flavor"]: c for c in copies}
+    if args.flavor:
+        unknown = [f for f in args.flavor if f not in by_name]
+        if unknown:
+            raise addon.AddonError(f"no such game folder: {', '.join(unknown)} "
+                                   f"(found: {', '.join(by_name) or 'none'})")
+        chosen = [by_name[f] for f in args.flavor]
+    else:
+        chosen = [c for c in copies if c["installed"]]
+        if not chosen and not args.auto:
+            if len(copies) != 1:
+                raise addon.AddonError("pick a game folder with --flavor: " + (", ".join(by_name) or
+                                       "no WoW install found (use --wow-dir)"))
+            chosen = copies
+    if args.auto:
+        chosen = [c for c in chosen if c["installed"] and not c["linked"] and not c["current"]]
+    data, errors, results = None, 0, []
+    for c in chosen:
+        try:
+            if data is None and not (c["current"] and not args.force) and not (c["linked"] and not args.force):
+                data = fetch()
+            result = addon.install(data or b"", Path(c["path"]).parents[2], release.get("hash"), force=args.force)
+        except (OSError, remote.RemoteError, addon.AddonError) as exc:
+            result, errors = f"failed: {exc}", errors + 1
+        results.append({"flavor": c["flavor"], "path": c["path"], "result": result})
+        if not args.json:
+            note = {"linked": " (development symlink; left alone, use --force to replace)",
+                    "installed": " — restart WoW (or /reload) to load it", "updated": " — /reload in game"}
+            print(f"{c['flavor']}: {result}{note.get(result, '')}")
+    if args.json:
+        print(json.dumps({"available": release, "results": results}))
+    return 1 if errors else 0
+
+
+def app_manifest(args, rem: remote.Remote) -> dict | None:
+    return (rem.get_json("/api/v1/updates").get("app") or {}).get(args.platform)
+
+
+def app_update_cmd(args) -> int:
+    rem = remote_for(args)
+    if rem is None:
+        out = {"available": False, "reason": "no server configured"}
+        print(json.dumps(out) if args.json else "No server configured; app updates come from a Goldmine server.")
+        return 0
+    rel = app_manifest(args, rem)
+    newer = bool(rel and int(rel.get("build") or 0) > args.current_build)
+    if args.action == "check":
+        out = {"available": newer, "release": rel}
+        if args.json:
+            print(json.dumps(out))
+        elif newer:
+            print(f"Goldmine {rel['version']} (build {rel['build']}) is available.")
+        else:
+            print("Goldmine is up to date." if rel else "The server has no app release yet.")
+        return 0
+
+    if not newer:
+        raise remote.RemoteError("no newer app release on the server")
+    if not args.dest:
+        raise remote.RemoteError("--dest is required")
+    data = rem.request("GET", rel["url"], timeout=900)
+    if hashlib.sha256(data).hexdigest() != rel["sha256"]:
+        raise remote.RemoteError("app download doesn't match the server's checksum")
+    dest = Path(args.dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    zpath = dest / "update.zip"
+    zpath.write_bytes(data)
+    if sys.platform == "darwin":  # ditto keeps permissions, symlinks and the code signature intact
+        subprocess.run(["ditto", "-x", "-k", str(zpath), str(dest)], check=True)
+    else:
+        import zipfile
+        with zipfile.ZipFile(zpath) as zf:
+            for name in zf.namelist():
+                if name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                    raise remote.RemoteError(f"unexpected path in app zip: {name!r}")
+            zf.extractall(dest)
+    zpath.unlink()
+    apps = [p for p in dest.iterdir() if not p.name.startswith(".")]
+    if len(apps) != 1:
+        raise remote.RemoteError("app download should contain exactly one app")
+    out = {"path": str(apps[0]), "version": rel["version"], "build": rel["build"], "notes": rel.get("notes", "")}
+    print(json.dumps(out) if args.json else f"unpacked Goldmine {rel['version']} to {apps[0]}")
+    return 0
+
+
+def release_app_cmd(args) -> int:
+    rem = remote_for(args)
+    if rem is None:
+        raise remote.RemoteError("no server configured (set [server] url, or pass --server)")
+    path = Path(args.path)
+    with tempfile.TemporaryDirectory() as tmp:
+        if path.suffix == ".zip":
+            data = path.read_bytes()
+        elif sys.platform == "darwin":
+            zpath = Path(tmp) / "app.zip"
+            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(path), str(zpath)], check=True)
+            data = zpath.read_bytes()
+        else:
+            data = Path(shutil.make_archive(str(Path(tmp) / "app"), "zip", path.parent, path.name)).read_bytes()
+    r = json.loads(rem.request("POST", "/api/v1/releases/app", body=data, timeout=900,
+                               params={"platform": args.platform, "notes": args.notes or None},
+                               headers={"Content-Type": "application/zip"}))
+    print(f"released Goldmine {r['version']} (build {r['build']}, {r['size'] / 1e6:.1f} MB) to {rem.base}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", default=DEFAULT_DB, help=f"SQLite database path (default {DEFAULT_DB})")
@@ -925,7 +1114,7 @@ def main(argv=None) -> int:
 
     def add_pricing(p):
         p.add_argument("--hours", type=int, default=72, help="market value window (default 72h)")
-        p.add_argument("--addon-data", default=str(DEFAULT_ADDON_DATA), help="where push writes Data.lua")
+        p.add_argument("--addon-data", help="where push writes Data.lua (default: every installed copy of the addon)")
 
     p = sub.add_parser("sync", help="import SavedVariables into the database")
     add_sources(p)
@@ -1031,13 +1220,39 @@ def main(argv=None) -> int:
     add_pricing(p)
     p.set_defaults(fn=push_cmd)
 
+    p = sub.add_parser("addon", help="install or update the Goldmine addon in WoW")
+    p.add_argument("action", choices=["status", "install"])
+    p.add_argument("--wow-dir", action="append", default=None, help="WoW install folder (repeatable)")
+    p.add_argument("--flavor", action="append", help="game folder to install into, e.g. _retail_ (repeatable)")
+    p.add_argument("--auto", action="store_true", help="only update copies that are already installed")
+    p.add_argument("--force", action="store_true", help="reinstall even if current; replace a linked dev copy")
+    p.add_argument("--json", action="store_true")
+    add_config(p)
+    p.set_defaults(fn=addon_cmd)
+
+    p = sub.add_parser("app-update", help="check for / download a new Goldmine app from the server")
+    p.add_argument("action", choices=["check", "download"])
+    p.add_argument("--platform", default=APP_PLATFORM)
+    p.add_argument("--current-build", type=int, default=0, help="build number of the running app")
+    p.add_argument("--dest", help="download: folder to unpack the new app into")
+    p.add_argument("--json", action="store_true")
+    add_config(p)
+    p.set_defaults(fn=app_update_cmd)
+
+    p = sub.add_parser("release-app", help="upload a Goldmine app build to the server (admin key)")
+    p.add_argument("path", help="Goldmine.app, or a zip of it")
+    p.add_argument("--platform", default=APP_PLATFORM)
+    p.add_argument("--notes", default="", help="release notes shown in the app")
+    add_config(p)
+    p.set_defaults(fn=release_app_cmd)
+
     args = ap.parse_args(argv)
     if getattr(args, "wow_dir", "unset") is None:
         env = os.environ.get("GOLDMINE_WOW_DIR")
         args.wow_dir = [env] if env else DEFAULT_WOW_DIRS
     try:
         return args.fn(args)
-    except remote.RemoteError as exc:
+    except (remote.RemoteError, addon.AddonError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

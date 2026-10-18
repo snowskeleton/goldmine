@@ -54,6 +54,8 @@ struct Settings {
     var collectMinutes = 20
     var autoSync = true
     var autoPush = true
+    var autoUpdateAddon = true   // keep installed copies of the addon current
+    var autoUpdateApp = true     // install new app builds from the server
     var markets: [MarketConfig] = []
 }
 
@@ -193,9 +195,13 @@ final class Engine: ObservableObject {
     @Published var lastCollectOK = true
     @Published var configError: String?
     @Published var watching = false
+    @Published var updates = UpdateState()
 
-    @AppStorage("pythonPath") var pythonPath: String = Bundle.main.object(forInfoDictionaryKey: "GoldminePython") as? String ?? "/usr/bin/python3"
-    @AppStorage("goldmineDir") var goldmineDir: String = Bundle.main.object(forInfoDictionaryKey: "GoldmineDir") as? String ?? ""
+    // Both empty by default: find Python automatically, and run the copy of desktop/ bundled in
+    // the app (so app updates also update the Python side). goldmineDir points at a checkout for development.
+    @AppStorage("pythonPath") var pythonPath: String = ""
+    @AppStorage("goldmineDir") var goldmineDir: String = ""
+    var updateTimer: Timer?
 
     private var rawConfig: [String: Any] = [:]
     private var collectTimer: Timer?
@@ -203,7 +209,22 @@ final class Engine: ObservableObject {
     private var watchProcess: Process?
     private var stopping = false
 
-    var scriptPath: String { (goldmineDir as NSString).appendingPathComponent("desktop/goldmine.py") }
+    var scriptPath: String {
+        let base = goldmineDir.trimmingCharacters(in: .whitespaces).isEmpty ? (Bundle.main.resourcePath ?? "") : goldmineDir
+        return (base as NSString).appendingPathComponent("desktop/goldmine.py")
+    }
+
+    /// The Python to run: the one set in Settings, else the one the app was built with, else a
+    /// common install location. (macOS's /usr/bin/python3 is too old unless the CLT ship 3.11+.)
+    var python: String {
+        let fm = FileManager.default
+        let set = pythonPath.trimmingCharacters(in: .whitespaces)
+        if !set.isEmpty { return set }
+        let candidates = [Bundle.main.object(forInfoDictionaryKey: "GoldminePython") as? String ?? "",
+                          "/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+                          "/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/usr/bin/python3"]
+        return candidates.first { !$0.isEmpty && fm.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
+    }
     var busy: Bool { collecting || syncing }
     var serverMode: Bool { !settings.serverURL.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -236,6 +257,7 @@ final class Engine: ObservableObject {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refreshStatus() }
         }
+        startUpdateChecks()
     }
 
     // MARK: - Logging
@@ -253,10 +275,11 @@ final class Engine: ObservableObject {
     @discardableResult
     func run(_ args: [String], label: String, quiet: Bool = false, stdin: Data? = nil) async -> (Int32, String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.executableURL = URL(fileURLWithPath: python)
         process.arguments = [scriptPath] + args
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  // never write __pycache__ into the signed app bundle
         process.environment = env
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
@@ -295,7 +318,7 @@ final class Engine: ObservableObject {
                     try? inPipe.fileHandleForWriting.close()
                 }
             } catch {
-                Task { @MainActor in self.append(label, "could not start \(self.pythonPath): \(error.localizedDescription)", error: true) }
+                Task { @MainActor in self.append(label, "could not start \(self.python): \(error.localizedDescription)", error: true) }
                 cont.resume(returning: (-1, ""))
             }
         }
@@ -381,6 +404,8 @@ final class Engine: ObservableObject {
         s.collectMinutes = app["collect_minutes"] as? Int ?? 20
         s.autoSync = app["auto_sync"] as? Bool ?? true
         s.autoPush = app["auto_push"] as? Bool ?? true
+        s.autoUpdateAddon = app["auto_update_addon"] as? Bool ?? true
+        s.autoUpdateApp = app["auto_update_app"] as? Bool ?? true
         s.markets = (obj["market"] as? [[String: Any]] ?? []).map(MarketConfig.init(dict:))
         settings = s
     }
@@ -396,6 +421,8 @@ final class Engine: ObservableObject {
         app["collect_minutes"] = settings.collectMinutes
         app["auto_sync"] = settings.autoSync
         app["auto_push"] = settings.autoPush
+        app["auto_update_addon"] = settings.autoUpdateAddon
+        app["auto_update_app"] = settings.autoUpdateApp
         cfg["app"] = app
         let url = settings.serverURL.trimmingCharacters(in: .whitespaces)
         if url.isEmpty { cfg.removeValue(forKey: "server") } else { cfg["server"] = ["url": url] }
@@ -432,12 +459,13 @@ final class Engine: ObservableObject {
         guard watchProcess == nil else { return }
         stopping = false
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.executableURL = URL(fileURLWithPath: python)
         var args = [scriptPath, "watch", "--exit-with-parent"]
         if settings.autoPush { args.append("--push") }
         process.arguments = args
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  // never write __pycache__ into the signed app bundle
         process.environment = env
         let pipe = Pipe()
         process.standardOutput = pipe

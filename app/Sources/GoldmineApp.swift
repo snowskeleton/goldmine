@@ -47,6 +47,15 @@ struct MenuContent: View {
             Text(collectLine)
         }
         Text(engine.watching ? "Watching SavedVariables" : "Not watching SavedVariables")
+        if let rel = engine.updates.appUpdate {
+            Divider()
+            Button("Install Goldmine \(rel.version) and Relaunch") { Task { await engine.installAppUpdate() } }
+                .disabled(engine.updates.installingApp)
+        }
+        if engine.updates.addonUpdates > 0 {
+            Button("Update WoW Addon") { Task { await engine.installAddon() } }
+                .disabled(engine.updates.installingAddon)
+        }
         Divider()
         if !engine.serverMode {
             Button(engine.collecting ? "Collecting…" : "Collect Prices Now") { Task { await engine.collectNow() } }

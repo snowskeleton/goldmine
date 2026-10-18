@@ -49,8 +49,22 @@ quest name, flight destination, AH cut/deposit, …).
 
 ## Install the addon
 
-Symlink it into the client's AddOns folder so edits here apply in game. The Forever
-folder name below is a guess; use whatever flavor folder sits next to `_retail_`:
+Goldmine.app installs and updates it for you (**Updates** tab: pick the game folders). From the
+command line:
+
+```bash
+python3 desktop/goldmine.py addon status                      # where it's installed, current or not
+python3 desktop/goldmine.py addon install --flavor _retail_   # install (or update) into a game folder
+python3 desktop/goldmine.py addon install                     # update every installed copy
+```
+
+With a server configured, the addon comes from the server (so redeploying the server rolls out
+addon changes); otherwise from the copy next to the script. Updates are detected by a content
+hash of the addon's files, so you don't have to bump `## Version:`. `Data.lua` is kept.
+
+For development, symlink it instead so edits here apply in game; a symlinked copy shows as a
+"development link" and is never replaced by updates. The Forever folder name below is a guess;
+use whatever flavor folder sits next to `_retail_`:
 
 ```bash
 ln -s /Users/snow/bin/goldmine/addon/Goldmine "/Applications/World of Warcraft/_forever_/Interface/AddOns/Goldmine"
@@ -98,12 +112,23 @@ A menu bar app that does the background work and is the place to change settings
   (API credentials, schedule, storage, launch at login).
 
 It shells out to `desktop/goldmine.py` for everything, so the CLI and the app always agree.
+The app bundles its own copy of `desktop/` and the addon, so it's self-contained (it still needs
+Python 3.11+; it finds Homebrew/python.org installs, or set the path in Settings).
 
 ```bash
 app/build.sh --install     # build, copy to ~/Applications, launch
+app/build.sh --release     # build and upload to your server; connected apps update to it
 ```
 
-Rebuild after changing Swift code. Python changes take effect on the next run, no rebuild needed.
+Rebuild after changing Swift or Python code. For development without rebuilding, set Settings →
+Paths → Goldmine folder to this checkout; the app then runs the Python here instead.
+
+**Updates.** The app checks at launch and every 6 hours. It keeps installed copies of the addon
+current, and with a server it installs new app builds: download, check checksum, bundle id,
+build number and code signature, then quit, swap the bundle, relaunch. Both are toggles in the
+Updates tab (`[app] auto_update_addon` / `auto_update_app`). The version is `app/VERSION`; the
+build number is the UTC build time, so every build is newer than the last. The app has to live
+somewhere it can write (e.g. `~/Applications`) to update itself.
 
 ## Market data and advice
 
@@ -210,6 +235,10 @@ docker compose -f server/docker-compose.yml up -d --build      # from the reposi
 - **Clients:** the Clients page generates a connection URL like `https://gm_…@gold.example.com`.
   Paste it into the Mac app (Settings → Goldmine server). The key is sent as a Bearer token,
   never in the URL path, and only its hash is stored; revoke it any time.
+- **Releases:** the image ships the addon, and connected apps install/update it from there. Mac
+  app builds are uploaded by an admin with `app/build.sh --release` (or `goldmine.py release-app
+  Goldmine.app`) and kept in `/data/releases`; the Clients page has download links for both. The
+  manifest (`/api/v1/updates`) is keyed by platform, ready for a Windows build.
 - With a server set, the Mac app stops collecting locally, uploads SavedVariables whenever WoW
   writes them, downloads the addon's Data.lua, and runs reports on the server. The CLI does the
   same (`--local` to bypass).

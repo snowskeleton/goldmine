@@ -13,6 +13,8 @@ COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
 COPY desktop/*.py desktop/
+# The addon clients install and update from (Data.lua is per machine and excluded below).
+COPY addon/Goldmine addon/Goldmine
 COPY server/goldmine_server server/goldmine_server
 
 RUN useradd --system --uid 1000 --home /data goldmine && mkdir -p /data && chown goldmine /data

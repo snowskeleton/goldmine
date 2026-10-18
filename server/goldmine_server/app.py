@@ -9,12 +9,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, services, settings
+from . import auth, db, releases, services, settings
 from .auth import User
 from .collector import collector, load_config
 
@@ -316,13 +316,28 @@ def my_keys(user: User):
 
 @app.get("/clients", response_class=HTMLResponse)
 def clients_page(request: Request, user: User = Depends(auth.require_user)):
-    return page(request, "clients.html", user, keys=my_keys(user), new_url=None)
+    return page(request, "clients.html", user, keys=my_keys(user), new_url=None, downloads=releases.manifest())
 
 
 @app.post("/clients", response_class=HTMLResponse)
 def clients_create(request: Request, name: str = Form("Desktop app"), user: User = Depends(auth.require_user)):
     key = auth.create_client_key(user, name)
-    return page(request, "clients.html", user, keys=my_keys(user), new_url=auth.connection_url(request, key))
+    return page(request, "clients.html", user, keys=my_keys(user), new_url=auth.connection_url(request, key),
+                downloads=releases.manifest())
+
+
+@app.get("/download/app/{platform}")
+def download_app(platform: str, user: User = Depends(auth.require_user)):
+    info = releases.app_release(platform)
+    return FileResponse(releases.app_file(platform), media_type="application/zip",
+                        filename=f"Goldmine-{info['version']}-{platform}.zip")
+
+
+@app.get("/download/addon")
+def download_addon(user: User = Depends(auth.require_user)):
+    info, data = releases.addon_zip()
+    return Response(data, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="Goldmine-addon-{info["version"] or info["hash"][:8]}.zip"'})
 
 
 @app.post("/clients/{key_id}/revoke")
@@ -429,6 +444,32 @@ def api_namespaces(user: User = Depends(auth.client_user)):
 @app.get("/api/v1/timing")
 def api_timing(item: str, user: User = Depends(auth.client_user)):
     return services.timing_json(user.id, item)
+
+
+# Updates: the addon ships inside this image; app builds are uploaded with an admin client key
+# (goldmine.py release-app, or app/build.sh --release).
+
+@app.get("/api/v1/updates")
+def api_updates(user: User = Depends(auth.client_user)):
+    return releases.manifest()
+
+
+@app.get("/api/v1/updates/addon.zip")
+def api_update_addon(user: User = Depends(auth.client_user)):
+    return Response(releases.addon_zip()[1], media_type="application/zip")
+
+
+@app.get("/api/v1/updates/app/{platform}.zip")
+def api_update_app(platform: str, user: User = Depends(auth.client_user)):
+    return FileResponse(releases.app_file(platform), media_type="application/zip")
+
+
+@app.post("/api/v1/releases/app")
+async def api_release_app(request: Request, platform: str = "macos", notes: str = "",
+                          user: User = Depends(auth.client_user)):
+    if not user.is_admin:
+        raise HTTPException(403, "admins only")
+    return releases.save_app_release(platform, await request.body(), notes)
 
 
 def run() -> None:
