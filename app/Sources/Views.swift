@@ -1,15 +1,86 @@
 import SwiftUI
 
 struct MainView: View {
+    @EnvironmentObject var engine: Engine
+
     var body: some View {
-        TabView {
-            StatusView().tabItem { Label("Status", systemImage: "gauge") }
-            ReportsView().tabItem { Label("Reports", systemImage: "chart.bar") }
-            MarketsView().tabItem { Label("Markets", systemImage: "building.columns") }
-            UpdatesView().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
-            SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
+        if engine.serverMode {
+            TabView {
+                StatusView().tabItem { Label("Status", systemImage: "gauge") }
+                ReportsView().tabItem { Label("Reports", systemImage: "chart.bar") }
+                UpdatesView().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+                SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
+            }
+            .padding()
+        } else {
+            ConnectView()
         }
-        .padding()
+    }
+}
+
+// MARK: - Connect
+
+/// Shown until a server is connected: the app has nothing to do without one.
+struct ConnectView: View {
+    @EnvironmentObject var engine: Engine
+    @State private var url = ""
+    @State private var reveal = false
+    @State private var working = false
+    @State private var result: (Bool, String)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Connect to your Goldmine server", systemImage: "server.rack").font(.title2.bold())
+            Text("Your server collects auction prices and stores your ledger. This app uploads your game data whenever WoW saves it, downloads prices into the addon, and keeps itself and the addon up to date.")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("1. Open your server in a browser and sign in.")
+                Text("2. On the **Clients** page, generate a connection URL and copy it.")
+                Text("3. Paste it here. It starts with https://gm_… (an invite link won't work).")
+            }
+            HStack {
+                ServerURLField(url: $url, reveal: reveal)
+                Button(reveal ? "Hide" : "Show") { reveal.toggle() }
+            }
+            HStack {
+                if let (ok, text) = result {
+                    Label(text, systemImage: ok ? "checkmark.circle" : "xmark.octagon")
+                        .foregroundStyle(ok ? .green : .red)
+                }
+                Spacer()
+                Button(working ? "Connecting…" : "Connect") {
+                    Task {
+                        working = true
+                        defer { working = false }
+                        result = await engine.checkServer(url)
+                        if result?.0 == true { _ = await engine.connect(url) }
+                    }
+                }
+                .disabled(working || url.trimmingCharacters(in: .whitespaces).isEmpty)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+            if let err = engine.configError {
+                Text(err).foregroundStyle(.red)
+            }
+            Spacer()
+        }
+        .padding(30)
+        .frame(maxWidth: 640)
+    }
+}
+
+/// The connection URL holds a client key, so it's masked unless revealed.
+struct ServerURLField: View {
+    @Binding var url: String
+    let reveal: Bool
+
+    var body: some View {
+        if reveal {
+            TextField("Connection URL", text: $url, prompt: Text("https://gm_…@gold.example.com"))
+        } else {
+            SecureField("Connection URL", text: $url, prompt: Text("https://gm_…@gold.example.com"))
+        }
     }
 }
 
@@ -21,13 +92,9 @@ struct StatusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                if !engine.serverMode {
-                    Button(engine.collecting ? "Collecting…" : "Collect Now") { Task { await engine.collectNow() } }
-                        .disabled(engine.collecting)
-                }
-                Button(engine.syncing ? "Syncing…" : "Sync Now") { Task { await engine.syncNow() } }
+                Button(engine.syncing ? "Uploading…" : "Upload Game Data") { Task { await engine.syncNow() } }
                     .disabled(engine.syncing)
-                Button("Push to Addon") { Task { await engine.pushNow() } }
+                Button("Download Prices to Addon") { Task { await engine.pushNow() } }
                 Spacer()
                 if let url = engine.serverDisplayURL {
                     Link(destination: url) { Label(url.host ?? "server", systemImage: "server.rack") }
@@ -40,7 +107,7 @@ struct StatusView: View {
             }
             if let s = engine.status {
                 HStack(alignment: .top, spacing: 16) {
-                    GroupBox("Markets") {
+                    GroupBox {
                         Table(s.markets) {
                             TableColumn("Market", value: \.name)
                             TableColumn("Game") { Text($0.game ?? "") }.width(70)
@@ -49,6 +116,13 @@ struct StatusView: View {
                             TableColumn("AH data from") { Text(relativeTime($0.last_modified)) }
                         }
                         .frame(minHeight: 120)
+                    } label: {
+                        HStack {
+                            Text("Markets")
+                            if let url = engine.serverDisplayURL {
+                                Link("Manage on server", destination: url.appendingPathComponent("markets")).font(.caption)
+                            }
+                        }
                     }
                     GroupBox("Characters") {
                         Table(s.characters) {
@@ -59,7 +133,7 @@ struct StatusView: View {
                     }
                 }
                 .frame(maxHeight: 200)
-                Text("\(s.transactions) ledger entries · \(s.scans) AH scans · \(s.recipes) recipes · database \(ByteCountFormatter.string(fromByteCount: Int64(s.db_bytes), countStyle: .file))")
+                Text("\(s.transactions) ledger entries · \(s.scans) AH scans · \(s.recipes) recipes · server market data \(ByteCountFormatter.string(fromByteCount: Int64(s.db_bytes), countStyle: .file))")
                     .font(.caption).foregroundStyle(.secondary)
             }
             GroupBox("Activity") {
@@ -172,176 +246,22 @@ struct ReportsView: View {
     }
 }
 
-// MARK: - Markets
-
-struct MarketsView: View {
-    @EnvironmentObject var engine: Engine
-    @State private var browsing = false
-    @State private var saved = false
-
-    var body: some View {
-        if engine.serverMode {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Markets are managed on your Goldmine server.").font(.headline)
-                Text("The server collects prices for every configured market; add or remove them in its web interface.")
-                    .foregroundStyle(.secondary)
-                if let url = engine.serverDisplayURL {
-                    Link("Open \(url.host ?? "server") in your browser", destination: url.appendingPathComponent("markets"))
-                }
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Each market is one auction house to collect hourly. Forever's AH is shared per region and realm type, so one market per type you play is enough.")
-                    .font(.caption).foregroundStyle(.secondary)
-                List {
-                    ForEach($engine.settings.markets) { $m in
-                        HStack {
-                            TextField("name", text: $m.name).frame(width: 170)
-                            Picker("", selection: $m.kind) {
-                                Text("commodities").tag("commodities")
-                                Text("realm").tag("realm")
-                                Text("classic (per faction)").tag("classic")
-                            }
-                            .frame(width: 170)
-                            TextField("region", text: $m.region).frame(width: 40)
-                            TextField("namespace", text: $m.namespace).frame(width: 170)
-                            TextField("realm slug", text: $m.realm).frame(width: 130)
-                                .disabled(m.kind == "commodities")
-                            TextField("game (auto)", text: $m.game).frame(width: 90)
-                                .help("Game version label. Leave empty to derive it from the namespace (retail, classic, ...). Set it for Forever if its namespace is ambiguous.")
-                            Toggle("Pricing", isOn: $m.pricing)
-                                .help("Use this market's prices for tooltips and reports. Turn off for other game versions whose item ids overlap.")
-                            Button(role: .destructive) {
-                                engine.settings.markets.removeAll { $0.id == m.id }
-                            } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-                }
-                HStack {
-                    Button("Add Market") { engine.settings.markets.append(MarketConfig()) }
-                    Button("Browse Realms…") { browsing = true }
-                    Button("Probe Namespaces") { Task { await engine.run(["probe", "us"], label: "probe") } }
-                        .help("Checks which API namespaces exist (shown in the Status tab's activity log). Use on Forever launch day.")
-                    Spacer()
-                    if saved { Text("Saved").foregroundStyle(.green) }
-                    Button("Revert") { Task { await engine.loadConfig() } }
-                    Button("Save") {
-                        Task { saved = await engine.saveConfig(); try? await Task.sleep(nanoseconds: 2_000_000_000); saved = false }
-                    }
-                    .keyboardShortcut("s")
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-            .sheet(isPresented: $browsing) { RealmBrowser().environmentObject(engine) }
-        }
-    }
-}
-
-struct RealmBrowser: View {
-    @EnvironmentObject var engine: Engine
-    @Environment(\.dismiss) private var dismiss
-    @State private var region = "us"
-    @State private var games: [NamespaceOption] = []
-    @State private var game = "retail"
-    @State private var customNamespace = ""
-    @State private var realms: [RealmInfo] = []
-    @State private var loading = false
-    @State private var filter = ""
-    @State private var selection: RealmInfo.ID?
-
-    private var namespace: String {
-        if let g = games.first(where: { $0.game == game }) { return g.namespace(region: region) }
-        return customNamespace.trimmingCharacters(in: .whitespaces)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Browse Realms").font(.headline)
-            HStack {
-                Picker("Region", selection: $region) {
-                    ForEach(["us", "eu", "kr", "tw"], id: \.self) { Text($0) }
-                }.frame(width: 120)
-                Picker("Game", selection: $game) {
-                    ForEach(games) { g in Text(g.auctions ? g.label : "\(g.label) (no AH data)").tag(g.game) }
-                    Text("Other…").tag("other")
-                }.frame(width: 240)
-                .help(game == "other" ? "Type any API namespace" : namespace)
-                if game == "other" {
-                    TextField("dynamic-\(region)", text: $customNamespace).frame(width: 170)
-                }
-                Button(loading ? "Loading…" : "Load") {
-                    Task { loading = true; realms = await engine.loadRealms(region: region, namespace: namespace); loading = false }
-                }.disabled(loading || namespace.isEmpty)
-                TextField("Filter", text: $filter)
-            }
-            HStack(spacing: 4) {
-                Text("Namespace: \(namespace.isEmpty ? "—" : namespace) · Blizzard docs:")
-                Link("retail", destination: URL(string: "https://community.developer.battle.net/documentation/world-of-warcraft/guides/namespaces")!)
-                Link("classic", destination: URL(string: "https://community.developer.battle.net/documentation/world-of-warcraft-classic/guides/namespaces")!)
-            }.font(.caption).foregroundStyle(.secondary)
-            Table(filtered, selection: $selection) {
-                TableColumn("Realm") { Text($0.name ?? "") }
-                TableColumn("Slug") { Text($0.slug ?? "") }
-                TableColumn("Type") { Text($0.type ?? "") }.width(70)
-                TableColumn("Category") { Text($0.category ?? "") }
-                TableColumn("Group") { Text("\($0.connected_realm_id)") }.width(60)
-            }
-            HStack {
-                Button("Add Region Commodities") {
-                    engine.settings.markets.append(MarketConfig(name: "\(region)-commodities", region: region,
-                                                                namespace: namespace, kind: "commodities"))
-                    dismiss()
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Add Selected Realm") {
-                    if let r = realms.first(where: { $0.id == selection }), let slug = r.slug {
-                        engine.settings.markets.append(MarketConfig(name: "\(region)-\(slug)", region: region,
-                                                                    namespace: namespace, kind: "realm", realm: slug))
-                    }
-                    dismiss()
-                }
-                .disabled(selection == nil)
-                .buttonStyle(.borderedProminent)
-            }
-            Text("Added markets aren't saved until you press Save.").font(.caption).foregroundStyle(.secondary)
-        }
-        .padding()
-        .frame(width: 760, height: 480)
-        .task {
-            games = await engine.loadNamespaces()
-            if games.isEmpty { game = "other" }  // couldn't get the list: fall back to typing a namespace
-        }
-    }
-
-    private var filtered: [RealmInfo] {
-        filter.isEmpty ? realms : realms.filter {
-            ($0.name ?? "").localizedCaseInsensitiveContains(filter) || ($0.slug ?? "").localizedCaseInsensitiveContains(filter)
-        }
-    }
-}
-
 // MARK: - Settings
 
 struct SettingsView: View {
     @EnvironmentObject var engine: Engine
     @State private var saved = false
-    @State private var showSecret = false
+    @State private var reveal = false
     @State private var checking = false
     @State private var serverResult: (Bool, String)?
+    @State private var confirmDisconnect = false
 
     var body: some View {
         Form {
             Section("Goldmine server") {
                 HStack {
-                    if showSecret {
-                        TextField("Connection URL", text: $engine.settings.serverURL, prompt: Text("https://gm_…@gold.example.com"))
-                    } else {
-                        SecureField("Connection URL", text: $engine.settings.serverURL, prompt: Text("https://gm_…@gold.example.com"))
-                    }
+                    ServerURLField(url: $engine.settings.serverURL, reveal: reveal)
+                    Button(reveal ? "Hide" : "Show") { reveal.toggle() }
                     Button(checking ? "Testing…" : "Test") {
                         Task {
                             checking = true
@@ -355,37 +275,17 @@ struct SettingsView: View {
                     Label(text, systemImage: ok ? "checkmark.circle" : "xmark.octagon")
                         .foregroundStyle(ok ? .green : .red)
                 }
-                Text("Generate a connection URL on your server's Clients page. With a server set, it collects prices and stores your data; this app uploads game data when WoW saves it and downloads prices for the addon. Leave empty to run everything on this Mac.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Blizzard API (local mode)") {
-                TextField("Client ID", text: $engine.settings.clientId)
                 HStack {
-                    if showSecret {
-                        TextField("Client secret", text: $engine.settings.clientSecret)
-                    } else {
-                        SecureField("Client secret", text: $engine.settings.clientSecret)
-                    }
-                    Button(showSecret ? "Hide" : "Show") { showSecret.toggle() }
+                    Text("To switch servers or keys, paste a new connection URL from the server's Clients page and press Save.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Disconnect…", role: .destructive) { confirmDisconnect = true }
                 }
-                Link("Manage API clients", destination: URL(string: "https://develop.battle.net/access/clients")!)
             }
             Section("Background work") {
-                Toggle("Collect auction prices automatically", isOn: $engine.settings.autoCollect)
-                    .disabled(engine.serverMode)
-                    .help(engine.serverMode ? "The server collects prices." : "")
-                Stepper("Every \(engine.settings.collectMinutes) minutes", value: $engine.settings.collectMinutes, in: 5...180, step: 5)
-                    .disabled(!engine.settings.autoCollect || engine.serverMode)
-                Toggle("Import game data when WoW saves it (logout, /reload)", isOn: $engine.settings.autoSync)
-                Toggle("Update the addon's Data.lua after each collect and import", isOn: $engine.settings.autoPush)
+                Toggle("Upload game data when WoW saves it (logout, /reload)", isOn: $engine.settings.autoSync)
+                Toggle("Download prices into the addon after each upload", isOn: $engine.settings.autoPush)
                 Toggle("Launch Goldmine at login", isOn: Binding(get: { engine.launchAtLogin }, set: { engine.launchAtLogin = $0 }))
-            }
-            Section("Storage") {
-                if engine.serverMode {
-                    Text("All data is stored on the server.").font(.caption).foregroundStyle(.secondary)
-                } else if let s = engine.status {
-                    Text("Database: \(s.db_path)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
             }
             Section("Paths") {
                 TextField("Python 3.11+", text: $engine.pythonPath, prompt: Text("automatic: \(engine.python)"))
@@ -410,6 +310,11 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog("Disconnect from \(engine.serverDisplayURL?.host ?? "the server")?", isPresented: $confirmDisconnect) {
+            Button("Disconnect", role: .destructive) { Task { _ = await engine.connect("") } }
+        } message: {
+            Text("Goldmine stops uploading game data and updating the addon until you connect again. Your data stays on the server.")
+        }
     }
 }
 

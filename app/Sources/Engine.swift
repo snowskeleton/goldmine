@@ -2,8 +2,11 @@ import Foundation
 import ServiceManagement
 import SwiftUI
 
-// Runs goldmine.py for everything: the Python tool stays the single source of truth for
-// collection, syncing, reports, and config; this app schedules it and gives it a UI.
+// A client for a Goldmine server: the server collects prices and stores everything. This app
+// uploads game data when WoW saves it, downloads prices for the addon, shows reports, and keeps
+// itself and the addon up to date. It runs goldmine.py for all of it, and only ever in server
+// mode: with no server connected it does nothing but ask for one (goldmine.py would otherwise
+// fall back to working locally).
 
 struct LogLine: Identifiable {
     let id = UUID()
@@ -13,50 +16,13 @@ struct LogLine: Identifiable {
     let isError: Bool
 }
 
-struct MarketConfig: Identifiable, Hashable {
-    var id = UUID()
-    var name: String
-    var region: String
-    var namespace: String
-    var kind: String
-    var realm: String
-    var pricing: Bool  // false: collected, but kept out of prices/advice
-    var game: String   // empty: derived from the namespace (retail, classic, ...)
-
-    init(name: String = "", region: String = "us", namespace: String = "dynamic-us",
-         kind: String = "realm", realm: String = "", pricing: Bool = true, game: String = "") {
-        self.name = name; self.region = region; self.namespace = namespace
-        self.kind = kind; self.realm = realm; self.pricing = pricing; self.game = game
-    }
-
-    init(dict: [String: Any]) {
-        self.init(name: dict["name"] as? String ?? "", region: dict["region"] as? String ?? "us",
-                  namespace: dict["namespace"] as? String ?? "", kind: dict["kind"] as? String ?? "realm",
-                  realm: dict["realm"] as? String ?? "", pricing: dict["pricing"] as? Bool ?? true,
-                  game: dict["game"] as? String ?? "")
-    }
-
-    var dict: [String: Any] {
-        var d: [String: Any] = ["name": name, "region": region, "namespace": namespace, "kind": kind]
-        if kind != "commodities" && !realm.isEmpty { d["realm"] = realm }
-        if !pricing { d["pricing"] = false }
-        if !game.isEmpty { d["game"] = game }
-        return d
-    }
-}
-
 /// Editable view of config.toml. Unknown keys in the file are preserved on save.
 struct Settings {
-    var serverURL = ""      // https://gm_KEY@host: when set, the server collects and stores everything
-    var clientId = ""
-    var clientSecret = ""
-    var autoCollect = true
-    var collectMinutes = 20
-    var autoSync = true
-    var autoPush = true
+    var serverURL = ""           // https://gm_KEY@host; required, the app does nothing without it
+    var autoSync = true          // upload SavedVariables whenever WoW writes them
+    var autoPush = true          // download prices into the addon after each upload
     var autoUpdateAddon = true   // keep installed copies of the addon current
     var autoUpdateApp = true     // install new app builds from the server
-    var markets: [MarketConfig] = []
 }
 
 struct MarketStatus: Codable, Identifiable {
@@ -121,25 +87,6 @@ struct ServerCheck: Codable {
     let server_version: String
 }
 
-struct RealmInfo: Codable, Identifiable, Hashable {
-    var id: String { "\(connected_realm_id)-\(slug ?? "")" }
-    let connected_realm_id: Int
-    let slug: String?
-    let name: String?
-    let type: String?
-    let category: String?
-}
-
-/// A game version to browse realms in (from the server via `goldmine.py namespaces`).
-struct NamespaceOption: Codable, Identifiable, Hashable {
-    var id: String { game }
-    let game: String
-    let label: String
-    let prefix: String
-    let auctions: Bool
-    func namespace(region: String) -> String { "\(prefix)-\(region)" }
-}
-
 func formatGold(_ copper: Int) -> String {
     let sign = copper < 0 ? "-" : ""
     let c = abs(copper)
@@ -189,10 +136,7 @@ final class Engine: ObservableObject {
     @Published var log: [LogLine] = []
     @Published var settings = Settings()
     @Published var status: StatusInfo?
-    @Published var collecting = false
     @Published var syncing = false
-    @Published var lastCollect: Date?
-    @Published var lastCollectOK = true
     @Published var configError: String?
     @Published var watching = false
     @Published var updates = UpdateState()
@@ -204,7 +148,6 @@ final class Engine: ObservableObject {
     var updateTimer: Timer?
 
     private var rawConfig: [String: Any] = [:]
-    private var collectTimer: Timer?
     private var statusTimer: Timer?
     private var watchProcess: Process?
     private var stopping = false
@@ -225,7 +168,8 @@ final class Engine: ObservableObject {
                           "/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/usr/bin/python3"]
         return candidates.first { !$0.isEmpty && fm.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
     }
-    var busy: Bool { collecting || syncing }
+    var busy: Bool { syncing }
+    /// True once a server URL is saved. Everything that talks to goldmine.py checks this first.
     var serverMode: Bool { !settings.serverURL.trimmingCharacters(in: .whitespaces).isEmpty }
 
     /// The server's address without the client key, for showing and opening in a browser.
@@ -252,7 +196,6 @@ final class Engine: ObservableObject {
 
     func start() async {
         await loadConfig()
-        await refreshStatus()
         applySchedule()
         statusTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refreshStatus() }
@@ -276,7 +219,7 @@ final class Engine: ObservableObject {
     func run(_ args: [String], label: String, quiet: Bool = false, stdin: Data? = nil) async -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = [scriptPath] + args
+        process.arguments = ["-B", scriptPath] + args  // -B: never write __pycache__ into the signed bundle
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"  // never write __pycache__ into the signed app bundle
@@ -326,20 +269,8 @@ final class Engine: ObservableObject {
 
     // MARK: - Actions
 
-    func collectNow() async {
-        guard !collecting else { return }
-        collecting = true
-        defer { collecting = false }
-        var args = ["collect"]
-        if settings.autoPush { args.append("--push") }
-        let (code, _) = await run(args, label: "collect")
-        lastCollect = Date()
-        lastCollectOK = code == 0
-        await refreshStatus()
-    }
-
     func syncNow() async {
-        guard !syncing else { return }
+        guard serverMode, !syncing else { return }
         syncing = true
         defer { syncing = false }
         var args = ["sync"]
@@ -349,37 +280,28 @@ final class Engine: ObservableObject {
     }
 
     func pushNow() async {
+        guard serverMode else { return }
         await run(["push"], label: "push")
     }
 
     func refreshStatus() async {
+        guard serverMode else { status = nil; return }
         let (code, out) = await run(["status"], label: "status", quiet: true)
         guard code == 0, let data = out.data(using: .utf8) else { return }
         status = try? JSONDecoder().decode(StatusInfo.self, from: data)
     }
 
     func report(_ args: [String]) async -> String {
+        guard serverMode else { return "Connect to a Goldmine server first." }
         let (_, out) = await run(args, label: args.first ?? "report", quiet: true)
         return out
     }
 
     func timing(_ item: String) async -> TimingResult? {
+        guard serverMode else { return nil }
         let (code, out) = await run(["timing", item, "--json"], label: "timing", quiet: true)
         guard code == 0, let data = out.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(TimingResult.self, from: data)
-    }
-
-    func loadRealms(region: String, namespace: String) async -> [RealmInfo] {
-        let (code, out) = await run(["realms", region, namespace, "--json"], label: "realms", quiet: true)
-        guard code == 0, let data = out.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([RealmInfo].self, from: data)) ?? []
-    }
-
-    /// Game versions for the realm browser: the server's list when one is configured, else goldmine.py's built-in one.
-    func loadNamespaces() async -> [NamespaceOption] {
-        let (code, out) = await run(["namespaces", "--json"], label: "realms", quiet: true)
-        guard code == 0, let data = out.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([NamespaceOption].self, from: data)) ?? []
     }
 
     // MARK: - Config
@@ -393,32 +315,20 @@ final class Engine: ObservableObject {
         }
         configError = nil
         rawConfig = obj
-        let api = obj["api"] as? [String: Any] ?? [:]
         let app = obj["app"] as? [String: Any] ?? [:]
         let server = obj["server"] as? [String: Any] ?? [:]
         var s = Settings()
         s.serverURL = server["url"] as? String ?? ""
-        s.clientId = api["client_id"] as? String ?? ""
-        s.clientSecret = api["client_secret"] as? String ?? ""
-        s.autoCollect = app["auto_collect"] as? Bool ?? true
-        s.collectMinutes = app["collect_minutes"] as? Int ?? 20
         s.autoSync = app["auto_sync"] as? Bool ?? true
         s.autoPush = app["auto_push"] as? Bool ?? true
         s.autoUpdateAddon = app["auto_update_addon"] as? Bool ?? true
         s.autoUpdateApp = app["auto_update_app"] as? Bool ?? true
-        s.markets = (obj["market"] as? [[String: Any]] ?? []).map(MarketConfig.init(dict:))
         settings = s
     }
 
     func saveConfig() async -> Bool {
-        var cfg = rawConfig
-        var api = cfg["api"] as? [String: Any] ?? [:]
-        api["client_id"] = settings.clientId
-        api["client_secret"] = settings.clientSecret
-        cfg["api"] = api
+        var cfg = rawConfig  // keys this app doesn't edit (e.g. a CLI user's [api]) are kept as they are
         var app = cfg["app"] as? [String: Any] ?? [:]
-        app["auto_collect"] = settings.autoCollect
-        app["collect_minutes"] = settings.collectMinutes
         app["auto_sync"] = settings.autoSync
         app["auto_push"] = settings.autoPush
         app["auto_update_addon"] = settings.autoUpdateAddon
@@ -426,9 +336,6 @@ final class Engine: ObservableObject {
         cfg["app"] = app
         let url = settings.serverURL.trimmingCharacters(in: .whitespaces)
         if url.isEmpty { cfg.removeValue(forKey: "server") } else { cfg["server"] = ["url": url] }
-        cfg["market"] = settings.markets.map(\.dict)
-
-        // Keep [[market]] last so the TOML stays readable.
         guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.sortedKeys]) else { return false }
         let (code, _) = await run(["config", "set"], label: "config", stdin: data)
         if code == 0 {
@@ -443,24 +350,26 @@ final class Engine: ObservableObject {
     // MARK: - Scheduling
 
     func applySchedule() {
-        collectTimer?.invalidate()
-        collectTimer = nil
-        if settings.autoCollect && !settings.clientId.isEmpty && !serverMode {
-            let interval = TimeInterval(max(settings.collectMinutes, 5) * 60)
-            collectTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-                Task { @MainActor in await self?.collectNow() }
-            }
-            Task { await collectNow() }
-        }
-        if settings.autoSync { startWatch() } else { stopWatch() }
+        if serverMode && settings.autoSync { startWatch() } else { stopWatch() }
+        Task { await refreshStatus() }
+    }
+
+    /// Saves a new server URL (after it tested OK) or clears it, and restarts background work.
+    func connect(_ url: String) async -> Bool {
+        stopWatch()
+        settings.serverURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard await saveConfig() else { return false }
+        updates = UpdateState()
+        if serverMode { Task { await checkForUpdates(auto: true) } }
+        return true
     }
 
     func startWatch() {
-        guard watchProcess == nil else { return }
+        guard serverMode, watchProcess == nil else { return }
         stopping = false
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
-        var args = [scriptPath, "watch", "--exit-with-parent"]
+        var args = ["-B", scriptPath, "watch", "--exit-with-parent"]
         if settings.autoPush { args.append("--push") }
         process.arguments = args
         var env = ProcessInfo.processInfo.environment
@@ -483,7 +392,7 @@ final class Engine: ObservableObject {
                 guard let self else { return }
                 self.watchProcess = nil
                 self.watching = false
-                if !self.stopping && self.settings.autoSync {
+                if !self.stopping && self.serverMode && self.settings.autoSync {
                     self.append("sync", "watcher stopped; restarting in 10s", error: true)
                     try? await Task.sleep(nanoseconds: 10_000_000_000)
                     self.startWatch()

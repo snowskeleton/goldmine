@@ -4,7 +4,7 @@
 #   ./build.sh --install  also copy to ~/Applications and (re)launch it
 #   ./build.sh --release  also upload the build to your Goldmine server (needs an admin client
 #                         key in ~/.goldmine/config.toml); connected apps update themselves to it
-# The app bundles desktop/*.py and the addon, so an app update also updates those.
+# The app bundles the client (desktop/*.py), so an app update also updates it.
 # Version: app/VERSION. Build number: UTC build time (YYYYMMDDHHMM), so later builds are newer.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,16 +18,13 @@ BUILD="$(date -u +%Y%m%d%H%M)"
 
 APP=build/Goldmine.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/desktop" "$APP/Contents/Resources/addon/Goldmine"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/desktop"
 
 swiftc -O -swift-version 5 -parse-as-library \
     -target "$(uname -m)-apple-macos13" \
     Sources/*.swift -o "$APP/Contents/MacOS/Goldmine"
 
 cp "$GOLDMINE_DIR"/desktop/*.py "$APP/Contents/Resources/desktop/"
-# The addon as shipped: everything but the per-machine Data.lua.
-(cd "$GOLDMINE_DIR/addon/Goldmine" && find . -type f ! -name Data.lua ! -name '.*' -print0 |
-    xargs -0 -I{} cp {} "$GOLDMINE_DIR/app/$APP/Contents/Resources/addon/Goldmine/{}")
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

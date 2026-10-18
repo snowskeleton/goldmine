@@ -84,17 +84,13 @@ extension Engine {
 
     /// Refreshes what's installed and what's available; with auto, applies updates the settings allow.
     func checkForUpdates(auto: Bool = false) async {
-        guard !updates.checking else { return }
+        guard serverMode, !updates.checking else { return }
         updates.checking = true
         await refreshAddonStatus()
-        if serverMode {
-            let (code, out) = await run(["app-update", "check", "--current-build", "\(appBuild)", "--json"],
-                                        label: "update", quiet: true)
-            if code == 0, let data = out.data(using: .utf8) {
-                updates.app = try? JSONDecoder().decode(AppCheck.self, from: data)
-            }
-        } else {
-            updates.app = nil
+        let (code, out) = await run(["app-update", "check", "--current-build", "\(appBuild)", "--json"],
+                                    label: "update", quiet: true)
+        if code == 0, let data = out.data(using: .utf8) {
+            updates.app = try? JSONDecoder().decode(AppCheck.self, from: data)
         }
         updates.lastCheck = Date()
         updates.checking = false
@@ -117,6 +113,7 @@ extension Engine {
     }
 
     func refreshAddonStatus() async {
+        guard serverMode else { return }
         let (code, out) = await run(["addon", "status", "--json"], label: "addon", quiet: true)
         guard code == 0, let data = out.data(using: .utf8) else { return }
         updates.addon = try? JSONDecoder().decode(AddonStatus.self, from: data)
@@ -124,7 +121,7 @@ extension Engine {
 
     /// Installs or updates the addon. flavors nil: every installed copy (auto: only outdated ones).
     func installAddon(flavors: [String]? = nil, auto: Bool = false, force: Bool = false) async {
-        guard !updates.installingAddon else { return }
+        guard serverMode, !updates.installingAddon else { return }
         updates.installingAddon = true
         defer { updates.installingAddon = false }
         var args = ["addon", "install"]
@@ -146,7 +143,7 @@ extension Engine {
 
     /// Downloads the newer build, checks it, and replaces this app with it (quits and relaunches).
     func installAppUpdate() async {
-        guard !updates.installingApp else { return }
+        guard serverMode, !updates.installingApp else { return }
         updates.installingApp = true
         updates.appError = nil
         defer { updates.installingApp = false }
@@ -227,10 +224,7 @@ struct UpdatesView: View {
         Form {
             Section("Goldmine app") {
                 LabeledContent("Installed", value: "\(engine.appVersion) (build \(engine.appBuild))")
-                if !engine.serverMode {
-                    Text("App updates come from a Goldmine server. Connect one in Settings to get them.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if let rel = engine.updates.appUpdate {
+                if let rel = engine.updates.appUpdate {
                     HStack {
                         Label("Goldmine \(rel.version) (build \(rel.build)) is available", systemImage: "arrow.down.circle.fill")
                             .foregroundStyle(.blue)
@@ -277,7 +271,6 @@ struct UpdatesView: View {
             Section("Automatic updates") {
                 Toggle("Keep the addon up to date", isOn: $engine.settings.autoUpdateAddon)
                 Toggle("Install app updates from the server", isOn: $engine.settings.autoUpdateApp)
-                    .disabled(!engine.serverMode)
                 Text("Checked at launch and every 6 hours. Linked development copies of the addon are never replaced. Press Save in Settings to keep changes to these.")
                     .font(.caption).foregroundStyle(.secondary)
             }

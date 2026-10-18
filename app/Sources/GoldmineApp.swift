@@ -43,10 +43,14 @@ struct MenuContent: View {
         }
         if let url = engine.serverDisplayURL {
             Text("Server: \(url.host ?? url.absoluteString)")
+            Text(engine.watching ? "Uploading game data as WoW saves it" : "Not watching game data")
         } else {
-            Text(collectLine)
+            Text("Not connected to a server")
+            Button("Connect…") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
-        Text(engine.watching ? "Watching SavedVariables" : "Not watching SavedVariables")
         if let rel = engine.updates.appUpdate {
             Divider()
             Button("Install Goldmine \(rel.version) and Relaunch") { Task { await engine.installAppUpdate() } }
@@ -56,14 +60,12 @@ struct MenuContent: View {
             Button("Update WoW Addon") { Task { await engine.installAddon() } }
                 .disabled(engine.updates.installingAddon)
         }
-        Divider()
-        if !engine.serverMode {
-            Button(engine.collecting ? "Collecting…" : "Collect Prices Now") { Task { await engine.collectNow() } }
-                .disabled(engine.collecting)
+        if engine.serverMode {
+            Divider()
+            Button(engine.syncing ? "Uploading…" : "Upload Game Data Now") { Task { await engine.syncNow() } }
+                .disabled(engine.syncing)
+            Button("Download Prices to Addon") { Task { await engine.pushNow() } }
         }
-        Button(engine.syncing ? "Syncing…" : "Sync Game Data Now") { Task { await engine.syncNow() } }
-            .disabled(engine.syncing)
-        Button(engine.serverMode ? "Download Prices to Addon" : "Push to Addon") { Task { await engine.pushNow() } }
         Divider()
         Button("Open Goldmine…") {
             openWindow(id: "main")
@@ -73,13 +75,5 @@ struct MenuContent: View {
         Divider()
         Button("Quit Goldmine") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
-    }
-
-    private var collectLine: String {
-        guard let last = engine.lastCollect else {
-            return engine.settings.autoCollect ? "Collecting every \(engine.settings.collectMinutes) min" : "Auto-collect off"
-        }
-        let rel = relativeTime(Int(last.timeIntervalSince1970))
-        return "Last collect \(rel)\(engine.lastCollectOK ? "" : " (errors)")"
     }
 }
