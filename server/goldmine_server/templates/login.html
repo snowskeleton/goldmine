@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Sign in · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="narrow card">
+  <h1>Sign in</h1>
+  <p>Use the passkey you created for this server.</p>
+  <button class="primary" id="signin">Sign in with a passkey</button>
+  <p class="error" hidden></p>
+  <p class="muted small">New here? You need an invite link from the admin.</p>
+</section>
+{% endblock %}

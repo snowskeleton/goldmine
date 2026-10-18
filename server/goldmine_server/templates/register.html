@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Set up' if mode == 'setup' else 'Join' }} · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="narrow card">
+  {% if mode == 'setup' %}
+    <h1>Welcome to {{ app_name }}</h1>
+    <p>No account exists yet, so this one becomes the <strong>admin</strong>. You'll sign in with a passkey
+       (Touch ID, Face ID, Windows Hello, a phone, or a security key); there's no password.</p>
+  {% elif not valid %}
+    <h1>Invite unavailable</h1>
+    <p>This invite link is invalid, already used, or expired. Ask the admin for a new one.</p>
+  {% else %}
+    <h1>You're invited</h1>
+    <p>Pick a name and create a passkey to join this {{ app_name }} server.</p>
+  {% endif %}
+  {% if mode == 'setup' or valid %}
+  <form id="register" data-mode="{{ mode }}" data-invite="{{ invite or '' }}">
+    <label>Your name <input name="name" required maxlength="40" autocomplete="username webauthn" autofocus></label>
+    <label>Passkey label <input name="passkeyName" placeholder="e.g. MacBook" maxlength="60"></label>
+    <button class="primary" type="submit">Create passkey</button>
+    <p class="error" hidden></p>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row between">
+  <h1>Dashboard</h1>
+  {% if user.is_admin %}
+  <form method="post" action="/collect"><button {{ 'disabled' if collector.running }}>{{ 'Collecting…' if collector.running else 'Collect now' }}</button></form>
+  {% endif %}
+</div>
+
+{% if not configured %}
+<div class="notice">
+  {% if user.is_admin %}
+    Collection isn't set up yet. Add your Blizzard API client id and secret in <a href="/settings">Settings</a>,
+    then add markets in <a href="/markets">Markets</a>.
+  {% else %}
+    The admin hasn't configured auction house collection yet.
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="grid">
+  <section class="card">
+    <h2>Collector</h2>
+    <dl class="kv">
+      <dt>Status</dt><dd>{% if collector.running %}collecting…{% elif enabled %}running{% else %}paused{% endif %}</dd>
+      <dt>Last run</dt><dd>{{ collector.last_run|ago }}{% if collector.last_ok == False %} <span class="bad">(errors)</span>{% endif %}</dd>
+      <dt>Next run</dt><dd>{{ collector.next_run|ago if collector.next_run else '—' }}</dd>
+      <dt>Market data</dt><dd>{{ status.db_bytes|bytes }}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Your characters</h2>
+    {% if status.characters %}
+    <table>
+      <tr><th>Character</th><th class="num">Gold</th><th>Seen</th></tr>
+      {% for c in status.characters %}
+      <tr><td>{{ c.key }}</td><td class="num">{{ fmt_gold(c.balance or 0) }}</td><td>{{ c.last_seen|ago }}</td></tr>
+      {% endfor %}
+    </table>
+    <p class="muted small">{{ status.transactions }} ledger entries · {{ status.scans }} AH scans · {{ status.recipes }} recipes</p>
+    {% else %}
+    <p class="muted">No game data yet. Create a <a href="/clients">client key</a>, paste the connection URL into the
+      Goldmine Mac app, and log in to WoW.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Markets</h2>
+  {% if status.markets %}
+  <table>
+    <tr><th>Market</th><th>Game</th><th class="num">Snapshots</th><th class="num">Items</th><th class="num">Open auctions</th><th>AH data from</th><th>Fetched</th></tr>
+    {% for m in status.markets %}
+    <tr><td>{{ m.name }}</td><td>{{ m.game or '' }}</td><td class="num">{{ m.snapshots }}</td><td class="num">{{ '{:,}'.format(m['items'] or 0) }}</td>
+        <td class="num">{{ '{:,}'.format(m.open_auctions or 0) }}</td><td>{{ m.last_modified|ago }}</td><td>{{ m.last_fetched|ago }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No markets collected yet.</p>{% endif %}
+</section>
+
+{% if user.is_admin %}
+<section class="card">
+  <h2>Activity</h2>
+  <pre class="log">{% for t, msg in log %}{{ t|int|ago }}  {{ msg }}
+{% else %}Nothing yet.{% endfor %}</pre>
+</section>
+{% endif %}
+{% endblock %}

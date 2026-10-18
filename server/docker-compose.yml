@@ -1,0 +1,18 @@
+# docker compose -f server/docker-compose.yml up -d --build   (run from the repository root)
+services:
+  goldmine:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: goldmine-server
+    restart: unless-stopped
+    environment:
+      # The public URL your reverse proxy serves. Passkeys are bound to this origin.
+      GOLDMINE_ORIGIN: https://gold.example.com
+    volumes:
+      - goldmine-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"   # expose only to the reverse proxy on this host
+
+volumes:
+  goldmine-data:

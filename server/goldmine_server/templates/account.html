@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Account · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>{{ user.name }}</h1>
+<section class="card">
+  <h2>Passkeys</h2>
+  <p class="muted">Add a passkey on each device you sign in from (or one stored in a password manager that syncs).</p>
+  <table>
+    <tr><th>Label</th><th>Added</th><th>Last used</th><th></th></tr>
+    {% for c in creds %}
+    <tr><td>{{ c.name }}</td><td>{{ c.created|ago }}</td><td>{{ c.last_used|ago }}</td>
+      <td>{% if creds|length > 1 %}<form method="post" action="/account/passkeys/remove" class="inline" onsubmit="return confirm('Remove this passkey?')">
+        <input type="hidden" name="cred" value="{{ c.hex }}"><button class="link danger">Remove</button></form>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <form id="register" data-mode="add" class="row">
+    <input name="passkeyName" placeholder="Label for the new passkey, e.g. iPhone" maxlength="60">
+    <button class="primary" type="submit">Add a passkey</button>
+  </form>
+  <p class="error" hidden></p>
+</section>
+{% endblock %}

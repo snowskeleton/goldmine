@@ -1,0 +1,12 @@
+## Interface: 120105
+## Title: Goldmine
+## Notes: Records every change to your gold, with its source, for export to a spreadsheet or database.
+## Author: snow
+## Version: 0.1.0
+## SavedVariables: GoldmineDB
+## IconTexture: Interface\Icons\INV_Misc_Coin_02
+
+Data.lua
+Goldmine.lua
+Market.lua
+Advice.lua

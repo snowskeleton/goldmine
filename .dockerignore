@@ -1,0 +1,6 @@
+**/.venv
+**/__pycache__
+**/data
+app/build
+addon
+*.sqlite

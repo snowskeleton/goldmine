@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Clients · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Client keys</h1>
+<p class="muted">A client key lets the Goldmine Mac app upload your game data and download prices. Each key is
+  shown once, inside a connection URL; paste that URL into the app's Settings.</p>
+
+{% if new_url %}
+<section class="card highlight">
+  <h2>New connection URL</h2>
+  <p>Copy it now; it won't be shown again. Anyone with this URL can act as you through the client API.</p>
+  <div class="row"><input id="newurl" value="{{ new_url }}" readonly class="mono grow">
+    <button onclick="copyField('newurl', this)">Copy</button></div>
+</section>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="/clients" class="row">
+    <input name="name" placeholder="Key name, e.g. MacBook" maxlength="60">
+    <button class="primary">Generate connection URL</button>
+  </form>
+  <table>
+    <tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr>
+    {% for k in keys %}
+    <tr class="{{ 'revoked' if k.revoked }}">
+      <td>{{ k.name }}</td><td><code>{{ k.prefix }}…</code></td><td>{{ k.created|ago }}</td>
+      <td>{{ k.last_used|ago }}{% if k.last_ip %} <span class="muted small">from {{ k.last_ip }}</span>{% endif %}</td>
+      <td>{% if k.revoked %}<span class="muted">revoked</span>{% else %}
+        <form method="post" action="/clients/{{ k.id }}/revoke" class="inline" onsubmit="return confirm('Revoke {{ k.name }}?')"><button class="link danger">Revoke</button></form>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="5" class="muted">No keys yet.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Users · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Users</h1>
+{% if new_invite %}
+<section class="card highlight">
+  <h2>Invite link</h2>
+  <p>Single use, valid for 7 days. Copy it now; it won't be shown again.</p>
+  <div class="row"><input id="invite" value="{{ new_invite }}" readonly class="mono grow">
+    <button onclick="copyField('invite', this)">Copy</button></div>
+</section>
+{% endif %}
+<div class="grid">
+  <section class="card">
+    <h2>Accounts</h2>
+    <table>
+      <tr><th>Name</th><th>Role</th><th class="num">Passkeys</th><th>Last sign-in</th><th>Joined</th></tr>
+      {% for u in users %}
+      <tr><td>{{ u.name }}</td><td>{{ 'admin' if u.is_admin else 'member' }}</td><td class="num">{{ u.passkeys }}</td>
+        <td>{{ u.last_login|ago }}</td><td>{{ u.created|ago }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  <section class="card">
+    <h2>Invites</h2>
+    <form method="post" action="/users/invite" class="row">
+      <input name="note" placeholder="Who is it for? (optional)" maxlength="80">
+      <button class="primary">Create invite link</button>
+    </form>
+    <table>
+      <tr><th>For</th><th>Created</th><th>Status</th><th></th></tr>
+      {% for i in invites %}
+      <tr><td>{{ i.note or '—' }}</td><td>{{ i.created|ago }}</td>
+        <td>{% if i.used %}used by {{ i.used_by_name or '?' }}{% elif i.expires < now %}expired{% else %}open, expires {{ i.expires|ago }}{% endif %}</td>
+        <td>{% if not i.used and i.expires >= now %}
+          <form method="post" action="/users/invites/revoke" class="inline"><input type="hidden" name="token_hash" value="{{ i.token_hash }}">
+            <button class="link danger">Revoke</button></form>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="4" class="muted">No invites yet.</td></tr>{% endfor %}
+    </table>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Reports · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Reports</h1>
+<nav class="tabs">
+  {% for k, label in kinds %}<a href="/reports?kind={{ k }}" class="{{ 'on' if k == kind }}">{{ label }}</a>{% endfor %}
+</nav>
+{% if kind in ('price', 'timing') %}
+<form class="row" method="get" action="/reports" id="itemform">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <input name="item" value="{{ item }}" placeholder="Item name or id" required>
+  <button class="primary">Show</button>
+</form>
+{% elif kind == 'summary' %}
+<form class="row" method="get" action="/reports">
+  <input type="hidden" name="kind" value="summary">
+  <label class="row">Last <input type="number" name="days" value="{{ days }}" min="1" max="3650" style="width:6em"> days</label>
+  <button>Update</button>
+</form>
+{% endif %}
+<p class="muted small">
+  {% if kind == 'crafts' %}Profit per craft for every recipe your characters know (open each profession window in game once).
+  {% elif kind == 'deals' %}Listed well below market value, and actually selling.
+  {% elif kind == 'timing' %}When an item sells and how much is listed, by day and hour, in your local time.
+  {% elif kind == 'summary' %}Your gold in and out by source, from the addon's ledger.
+  {% else %}Every change in an item's price and supply over the last 24 hours.{% endif %}
+</p>
+{% if kind == 'timing' %}
+  <div id="timing" data-item="{{ item }}"></div>
+{% elif output is not none %}
+  <pre class="report">{{ output }}</pre>
+{% endif %}
+{% endblock %}
+{% block scripts %}{% if kind == 'timing' %}<script src="/static/timing.js"></script>{% endif %}{% endblock %}

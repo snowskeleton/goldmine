@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Settings · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+{% if request.query_params.get('saved') %}<div class="notice ok">Saved.</div>{% endif %}
+<div class="grid">
+  <section class="card">
+    <h2>Blizzard API</h2>
+    <form method="post" action="/settings" class="stack">
+      <label>Client ID <input name="client_id" value="{{ api.client_id or '' }}" autocomplete="off"></label>
+      <label>Client secret
+        <input name="client_secret" type="password" autocomplete="new-password"
+               placeholder="{{ 'saved — leave blank to keep' if api.client_secret else 'not set' }}"></label>
+      <p class="muted small">Create one at <a href="https://develop.battle.net/access/clients" target="_blank" rel="noopener">develop.battle.net</a>.</p>
+      <h2>Collection</h2>
+      <label class="check"><input type="checkbox" name="auto_collect" value="1" {{ 'checked' if app_cfg.get('auto_collect', True) }}> Collect automatically</label>
+      <label>Every <input type="number" name="collect_minutes" min="5" max="720" value="{{ app_cfg.get('collect_minutes', 20) }}" style="width:6em"> minutes</label>
+      <p class="muted small">Blizzard refreshes snapshots about hourly; checking more often just catches them sooner. Unchanged snapshots cost one tiny request.</p>
+      <button class="primary">Save</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Storage</h2>
+    <p class="muted small">Data folder: <code>{{ data_dir }}</code></p>
+    {% if storage %}
+    <table>
+      <tr><th>Table / index</th><th class="num">Size</th></tr>
+      {% for name, size in storage %}{% if size > 100000 %}<tr><td>{{ name }}</td><td class="num">{{ size|bytes }}</td></tr>{% endif %}{% endfor %}
+    </table>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+# Build output and local environments
+app/build/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Runtime data: databases, API credentials, session secrets
+server/data/
+*.sqlite
+*.sqlite-*
