@@ -130,7 +130,8 @@ unpack = unpack or table.unpack -- WoW is Lua 5.1
 local tooltipHook
 TooltipDataProcessor = { AddTooltipPostCall = function(_, fn) tooltipHook = fn end }
 Enum.TooltipDataType = { Item = 0 }
-for _, file in ipairs({ "Data.lua", "Goldmine.lua", "Market.lua", "Advice.lua" }) do
+-- Data.lua is generated per machine (and untracked); the Advice tests below supply their own Goldmine_Data.
+for _, file in ipairs({ "Goldmine.lua", "Market.lua", "Advice.lua" }) do
     assert(loadfile("Goldmine/" .. file))("Goldmine", ns)
 end
 fire("ADDON_LOADED", "Goldmine")
