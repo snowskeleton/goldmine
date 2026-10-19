@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, ledger, market, releases, services, settings
+from . import auth, db, ledger, market, marketdata, mcp_server, releases, services, settings
 from .auth import User
 from .collector import collector, load_config
 
@@ -477,6 +477,12 @@ async def api_release_app(request: Request, platform: str = "macos", notes: str 
     if not user.is_admin:
         raise HTTPException(403, "admins only")
     return releases.save_app_release(platform, await request.body(), notes)
+
+
+# Read-only market data (/api/v1/market/*) and the same as MCP tools (/api/v1/mcp).
+app.include_router(marketdata.router)
+app.include_router(mcp_server.router)
+mcp_server.SERVER_INFO["version"] = VERSION
 
 
 def run() -> None:
