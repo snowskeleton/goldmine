@@ -11,3 +11,6 @@ __pycache__/
 server/data/
 *.sqlite
 *.sqlite-*
+
+# Claude Code worktrees
+.claude/worktrees/
