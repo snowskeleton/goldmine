@@ -203,7 +203,7 @@ class MarketDataTests(unittest.TestCase):
                                       "journal_write", "journal_read",
                                       "get_account", "get_inventory", "get_owned_auctions", "get_ledger",
                                       "get_recipes", "get_craft_results", "get_token_price", "get_item_info",
-                                      "get_auction_mail", "get_crafting_orders"})
+                                      "get_auction_mail", "get_crafting_orders", "get_risk_status"})
         self.assertEqual({n for n, t in tools.items() if not t["annotations"]["readOnlyHint"]},
                          {"publish_plan", "journal_write"})
         res = self.rpc("tools/call", {"name": "get_price_history", "arguments": {

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import account as acct, auth, db, journal, ledger, lots, marketdata as md, sim, tasks
+from . import account as acct, auth, db, journal, ledger, lots, marketdata as md, risk, sim, tasks
 from .auth import User
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -282,6 +282,13 @@ TOOLS = [
     *TASK_TOOLS,
     *LEARNING_TOOLS,
     *ACCOUNT_TOOLS,
+    _tool("get_risk_status", "Risk status",
+          "Where the account stands against the trader's risk rules (docs/trader.md): gold and net worth (gold + "
+          "conservative inventory value) in copper and in WoW tokens, the raw (1 token) and net (2 token) floors and "
+          "headroom, working capital, per-item and total inventory caps, trader inventory at cost, trader realized "
+          "P&L and experiment budget left, and whether real buys are allowed. publish_plan enforces the same rules.",
+          {"realm": {"type": "string", "default": risk.REALM, "description": "Realm whose characters count"}},
+          [], lambda conn, **kw: risk.status(conn, **kw), user_db=True),
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}
 

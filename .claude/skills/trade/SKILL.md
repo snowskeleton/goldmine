@@ -129,6 +129,9 @@ what you would have done. Score older paper plans with `evaluate_plan` in step 2
 - Buy: `max_unit` = the most you'd pay *live*, from the strategy's numbers, not the
   current snapshot minimum. Post: `floor` = the lowest price where the trade still makes money
   after the 5% cut and deposit; `ceil` = about the market value or a little above.
+- Real buys must carry their exit: `sell` (target unit price, copper) and `hold_days`. For
+  craft inputs, `sell` is the reagent's own conservative resale price, the fallback if the craft
+  falls through.
 - Use `after` when a craft needs a buy first.
 
 Call `publish_plan`. If it's rejected, read the errors, fix the plan (smaller sizes, fewer buys)

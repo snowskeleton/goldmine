@@ -52,7 +52,7 @@ DURATIONS = (12, 24, 48)  # hours, as the AH offers them
 # Per kind: required fields, optional fields. Every task also has id, kind, est_min (required)
 # and why, ev, after (optional).
 KINDS = {
-    "buy": ({"item", "qty", "max_unit"}, set()),
+    "buy": ({"item", "qty", "max_unit"}, {"sell", "hold_days"}),
     "post": ({"item", "qty", "floor", "ceil"}, {"undercut", "duration"}),
     "cancel": ({"item"}, {"below", "above"}),
     "craft": ({"recipe", "qty"}, set()),
@@ -62,13 +62,13 @@ KINDS = {
 }
 COMMON_REQUIRED = {"id", "kind", "est_min"}
 COMMON_OPTIONAL = {"why", "ev", "after"}
-POSITIVE_INTS = {"item", "recipe", "qty", "max_unit", "floor", "ceil", "below", "above"}  # ids and copper
+POSITIVE_INTS = {"item", "recipe", "qty", "max_unit", "sell", "floor", "ceil", "below", "above"}  # ids and copper
 _PLAN_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 # Field order in Tasks.lua, for readable diffs; anything else follows alphabetically.
-_ORDER = ["id", "kind", "item", "recipe", "qty", "max_unit", "floor", "ceil", "undercut", "duration",
+_ORDER = ["id", "kind", "item", "recipe", "qty", "max_unit", "sell", "hold_days", "floor", "ceil", "undercut", "duration",
           "below", "above", "to", "after", "est_min", "ev", "why"]
 
 
@@ -113,6 +113,8 @@ def _task_errors(i: int, t, seen_ids: set) -> list[str]:
         errors.append(f"{where}: ev must be an integer (copper)")
     if "duration" in t and t["duration"] not in DURATIONS:
         errors.append(f"{where}: duration must be 12, 24 or 48 (hours)")
+    if "hold_days" in t and (not _is_num(t["hold_days"]) or t["hold_days"] <= 0):
+        errors.append(f"{where}: hold_days must be a number > 0 (days)")
     if "est_min" in t and (not _is_num(t["est_min"]) or t["est_min"] < 0):
         errors.append(f"{where}: est_min must be a number >= 0 (minutes)")
     for k in ("why", "to"):
@@ -164,9 +166,9 @@ def validate(plan, now: int | None = None) -> list[str]:
 
 
 def validate_risk(conn, plan: dict) -> list[str]:
-    """Portfolio risk rules (docs/trader.md, "Risk rules"): token floors, exposure caps, exits.
-    Not implemented yet; wired in once the account-state and journal branches merge."""
-    return []
+    """Portfolio risk rules (docs/trader.md, "Risk rules"): token floors, exposure caps, exits."""
+    from . import risk  # risk -> lots/sim/account; imported late to keep tasks importable from ledger
+    return risk.validate(conn, plan)
 
 
 def normalize(plan: dict, now: int | None = None) -> dict:

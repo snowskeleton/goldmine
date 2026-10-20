@@ -27,6 +27,7 @@ server/           Goldmine server (Docker): does all the work and stores everyth
                   ledger, recipes, crafts, WoW token price, item metadata (MCP only)
     mcp_server.py the same as MCP tools for assistants (/api/v1/mcp)
     tasks.py      trader plans (validation, active plan, Tasks.lua) and task results
+    risk.py       trader risk rules (token floors, exposure caps, experiment budget) for publish_plan
     sim.py        market simulator: plan scoring, strategy backtests, conservative inventory value
     lots.py       FIFO cost-basis lots from the AH ledger, realized P&L, scorecard
     journal.py    the trader's journal (hypotheses, decisions, lessons) in the user's game DB
@@ -394,7 +395,7 @@ hand. The flow:
 1. The trader calls the MCP tool `publish_plan`. The server checks the plan's shape (task kinds
    `buy post cancel craft scan mail vendor`, required fields, prices as copper ints, `expires` in
    the future, total `est_min` ≤ `budget_min`) and stores it as the active plan. Older plans are
-   kept for history. Portfolio risk checks go in `tasks.validate_risk`, which accepts everything for now.
+   kept for history. Real (non-paper) plans must then pass the risk rules in `risk.py` (token floors, exposure caps, buy exits, experiment budget); `get_risk_status` shows where the account stands.
 2. `goldmine.py push` (the app does this after every sync) writes `Tasks.lua` next to `Data.lua`
    in every installed copy of the addon (`GET /api/v1/addon-tasks`; when no plan is active it writes an empty plan). `/reload` loads it.
 3. In game, `/goldmine tasks` (or opening the AH, mailbox, a merchant or a profession) shows the

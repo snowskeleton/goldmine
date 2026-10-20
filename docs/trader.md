@@ -53,6 +53,7 @@ GoldmineTasks = {
   budget_min = 20,
   tasks = {
     { id = "t1", kind = "buy",  item = 210930, qty = 200, max_unit = 412000,
+      sell = 520000, hold_days = 5,   -- the exit; required on real (non-paper) buys
       why = "craft input for t3", est_min = 2, ev = 0 },
     { id = "t2", kind = "post", item = 211879, qty = 20, floor = 950000, ceil = 1400000,
       undercut = 1, duration = 24, est_min = 2, ev = 180000 },
@@ -118,4 +119,4 @@ their branches merge cleanly.
   `get_recipes`, `get_craft_results`, `get_token_price`, `get_item_info`
 - Task queue: `publish_plan`, `get_plan`, `get_task_results`
 - Learning: `journal_write`, `journal_read`, `get_lots`, `get_scorecard`, `backtest`, `evaluate_plan`
-- Integration (after merge): risk validation inside `publish_plan`, `get_risk_status`
+- Risk (risk.py): enforced inside `publish_plan`; `get_risk_status` reports the same numbers

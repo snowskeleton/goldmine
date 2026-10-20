@@ -45,6 +45,19 @@ def sample_plan(**over) -> dict:
     return plan
 
 
+# Portfolio risk (risk.py, which needs market data) has its own tests in test_risk.py; here
+# every plan passes it unless a test says otherwise.
+_risk = mock.patch.object(tasks, "validate_risk", return_value=[])
+
+
+def setUpModule():
+    _risk.start()
+
+
+def tearDownModule():
+    _risk.stop()
+
+
 def mem_conn():
     return ledger.connect(":memory:")
 
@@ -131,7 +144,6 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(tasks.PlanRejected) as cm:
                 tasks.publish(self.conn, sample_plan(), NOW)
         self.assertEqual(cm.exception.errors, ["raw gold below 1 token"])
-        self.assertEqual(tasks.validate_risk(self.conn, sample_plan()), [])
 
     def test_lua_round_trip(self):
         plan = tasks.normalize(sample_plan(), NOW)
