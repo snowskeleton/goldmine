@@ -19,6 +19,8 @@ from . import ledger, market, settings
 from .marketdata import MAX_ROWS, _clamp, _names, iso, resolve_items
 
 DEFAULT_LIMIT = 200
+STALE_RECIPES = 7 * 86400  # same as the addon's reminder
+NO_RECIPES = ("Fishing", "Archaeology")
 
 
 def _since(value, default_days: float | None = None) -> int | None:
@@ -64,12 +66,15 @@ def account(conn, realm: str | None = None) -> dict:
     bank = seen("SELECT owner, MAX(updated) FROM inventory WHERE location = 'bank' GROUP BY owner")
     lists = seen("SELECT char_key, ts FROM owned_auction_lists")
     profs = seen("SELECT char_key, MAX(scanned) FROM professions GROUP BY char_key")
+    by_char: dict[str, list] = {}
+    for p in _professions(conn):
+        by_char.setdefault(p.pop("character"), []).append(p)
     out = []
     for key, name, rlm, cls, faction, region, balance, last_seen in chars:
         out.append({"character": key, "name": name, "realm": rlm, "class": cls, "faction": faction,
                     "region": region, "gold": balance or 0, "last_seen": last_seen, "last_seen_iso": iso(last_seen),
                     "bags_seen": bags.get(key), "bank_seen": bank.get(key), "auctions_seen": lists.get(key),
-                    "professions_seen": profs.get(key)})
+                    "professions_seen": profs.get(key), "professions": by_char.get(key, [])})
     wb = conn.execute("SELECT money, updated, seen_by FROM warband_money WHERE id = 1").fetchone()
     wb_items = conn.execute("SELECT MAX(updated) FROM inventory WHERE owner = 'warband'").fetchone()[0]
     warband = {"gold": wb[0] if wb else None, "seen": wb[1] if wb else None, "seen_iso": iso(wb[1]) if wb else None,
@@ -225,12 +230,22 @@ def recipes(conn, char: str | None = None, profession: str | None = None, item=N
                     "reagents": [{"item_id": i, "name": names.get(i), "quantity": q}
                                  for i, q in reagents.get((key, rid), [])],
                     "operation": o})
+    return {"professions": _professions(conn, char), **meta, "recipes": out}
+
+
+def _professions(conn, char: str | None = None) -> list[dict]:
+    """Every character's professions: skill (from login) and when recipes were last catalogued.
+    needs_catalogue = no recipes yet, or older than a week (open that profession window)."""
     clause, params = _char_clause(char)
-    profs = conn.execute(f"""SELECT char_key, profession, scanned, concentration, concentration_max FROM professions
-                             WHERE 1=1{clause} ORDER BY char_key, profession""", params).fetchall()
-    return {"professions": [{"character": k, "profession": p, "scanned": t, "scanned_iso": iso(t),
-                             "concentration": c, "concentration_max": m} for k, p, t, c, m in profs],
-            **meta, "recipes": out}
+    rows = conn.execute(f"""SELECT char_key, profession, skill, max_skill, skill_line, skill_seen, scanned,
+                                   concentration, concentration_max FROM professions
+                            WHERE 1=1{clause} ORDER BY char_key, profession""", params).fetchall()
+    now = time.time()
+    return [{"character": k, "profession": p, "skill": sk, "max_skill": mx, "skill_line": line,
+             "skill_seen": seen, "recipes_seen": t, "recipes_seen_iso": iso(t),
+             "needs_catalogue": p not in NO_RECIPES and (t is None or now - t > STALE_RECIPES),
+             "concentration": c, "concentration_max": m}
+            for k, p, sk, mx, line, seen, t, c, m in rows]
 
 
 def craft_results(conn, since=None, char: str | None = None, recipe: int | None = None, item=None,
@@ -279,6 +294,100 @@ def craft_results(conn, since=None, char: str | None = None, recipe: int | None 
                         "concentration": r["concentration"], "ingenuity": bool(r["ingenuity"]),
                         "returned": [{"item_id": i, "quantity": q} for i, q in json.loads(r["returned"] or "[]")]}
                        for r in page]}
+
+
+def auction_mail(conn, since=None, char: str | None = None, kind: str | None = None, item=None,
+                 player: str | None = None, limit: int | None = None, offset: int = 0) -> dict:
+    """AH mail from the inbox, newest first: sale invoices (buyer, bid/buyout, deposit, cut: the
+    ground-truth sale price), won/outbid/expired/cancelled auctions, plus per-item sale totals."""
+    since_ts = _since(since, 30)
+    clause, params = _char_clause(char)
+    sql, params = f"SELECT * FROM auction_mail WHERE arrived >= ?{clause}", [since_ts] + params
+    if kind:
+        sql, params = sql + " AND kind = ?", params + [kind]
+    if player:
+        sql, params = sql + " AND player = ? COLLATE NOCASE", params + [player]
+    if item:
+        ids = resolve_items(conn, item)
+        names = [n for n in _names(conn, ids).values() if n]
+        sql += f" AND (item_id IN ({','.join('?' * len(ids))})" + (
+            f" OR item_name IN ({','.join('?' * len(names))}))" if names else ")")
+        params += ids + names
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(sql + " ORDER BY arrived DESC, id DESC", params).fetchall()
+    finally:
+        conn.row_factory = None
+    sales: dict[str, dict] = {}
+    for r in rows:
+        if r["invoice"] == "seller":  # the final invoice; seller_temp_invoice precedes it
+            s = sales.setdefault(r["item_name"], {"item_name": r["item_name"], "sales": 0, "quantity": 0,
+                                                  "gross": 0, "net": 0, "buyers": set()})
+            s["sales"] += 1
+            s["quantity"] += r["quantity"] or 0
+            s["gross"] += r["buyout"] or r["bid"] or 0
+            s["net"] += r["money"] or 0
+            if r["player"]:
+                s["buyers"].add(r["player"])
+    for s in sales.values():
+        s["buyers"] = len(s["buyers"])
+        s["avg_unit_price"] = s["gross"] // s["quantity"] if s["quantity"] else None
+    page, meta = _page(rows, limit, offset)
+    return {"since": since_ts, "since_iso": iso(since_ts), **meta,
+            "sales_by_item": sorted(sales.values(), key=lambda s: -s["gross"]),
+            "mail": [{"id": r["id"], "character": r["char_key"], "arrived": r["arrived"], "arrived_iso": iso(r["arrived"]),
+                      "kind": r["kind"], "invoice": r["invoice"], "item_id": r["item_id"], "item_name": r["item_name"],
+                      "quantity": r["quantity"], "player": r["player"], "bid": r["bid"], "buyout": r["buyout"],
+                      "deposit": r["deposit"], "consignment": r["consignment"], "money": r["money"],
+                      "unit_price": (r["buyout"] or r["bid"]) // r["quantity"]
+                      if r["quantity"] and (r["buyout"] or r["bid"]) else None}
+                     for r in page]}
+
+
+ORDER_TYPES = {0: "public", 1: "guild", 2: "personal", 3: "patron"}
+
+
+def crafting_orders(conn, order_type: str | None = None, recipe: int | None = None, item=None,
+                    active_only: bool = True, limit: int | None = None, offset: int = 0) -> dict:
+    """Crafting orders the crafting orders window showed, highest commission first, and the public
+    order board (buckets) as each character last saw it. active_only drops expired orders."""
+    sql, params = "SELECT * FROM crafting_orders WHERE 1=1", []
+    if order_type:
+        codes = [k for k, v in ORDER_TYPES.items() if v == order_type]
+        if not codes:
+            raise HTTPException(400, f"order_type must be one of {', '.join(ORDER_TYPES.values())}")
+        sql, params = sql + " AND order_type = ?", params + codes
+    if recipe is not None:
+        sql, params = sql + " AND recipe_id = ?", params + [int(recipe)]
+    if item:
+        ids = resolve_items(conn, item)
+        sql, params = sql + f" AND item_id IN ({','.join('?' * len(ids))})", params + ids
+    if active_only:
+        sql, params = sql + " AND (expires IS NULL OR expires > ?)", params + [int(time.time())]
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(sql + " ORDER BY tip DESC, order_id", params).fetchall()
+        buckets = conn.execute("SELECT * FROM crafting_order_buckets ORDER BY tip_max DESC").fetchall()
+    finally:
+        conn.row_factory = None
+    page, meta = _page(rows, limit, offset)
+    names = _names(conn, [r["item_id"] for r in page if r["item_id"]] + [b["item_id"] for b in buckets if b["item_id"]]
+                   + [i for r in page for i, _ in json.loads(r["reagents"] or "[]") + json.loads(r["rewards"] or "[]")])
+    pairs = lambda raw, k: [{"item_id": i, "name": names.get(i), k: n} for i, n in json.loads(raw or "[]")]  # noqa: E731
+    return {**meta, "orders": [{
+        "order_id": r["order_id"], "type": ORDER_TYPES.get(r["order_type"], r["order_type"]), "state": r["order_state"],
+        "item_id": r["item_id"], "name": names.get(r["item_id"]), "recipe_id": r["recipe_id"],
+        "min_quality": r["min_quality"], "tip": r["tip"], "consortium_cut": r["consortium_cut"],
+        "expires": r["expires"], "expires_iso": iso(r["expires"]), "claim_end": r["claim_end"],
+        "recraft": bool(r["recraft"]), "fulfillable": None if r["fulfillable"] is None else bool(r["fulfillable"]),
+        "customer": r["customer"], "npc_customer": r["npc_customer"],
+        "reagents_provided": pairs(r["reagents"], "quantity"), "rewards": pairs(r["rewards"], "count"),
+        "seen_by": r["seen_by"], "first_seen": r["first_seen"], "last_seen": r["last_seen"],
+        "last_seen_iso": iso(r["last_seen"])} for r in page],
+        "public_board": [{"character": b["char_key"], "as_of": b["ts"], "as_of_iso": iso(b["ts"]),
+                          "item_id": b["item_id"], "name": names.get(b["item_id"]), "recipe_id": b["recipe_id"],
+                          "available": b["available"], "tip_avg": b["tip_avg"], "tip_max": b["tip_max"]}
+                         for b in buckets]}
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +451,7 @@ def item_info(conn, items) -> dict:
 # ---------------------------------------------------------------------------
 
 _ITEM_QUERIES = ("SELECT item_id FROM inventory", "SELECT item_id FROM owned_auctions",
+                 "SELECT item_id FROM crafting_orders WHERE item_id IS NOT NULL",
                  "SELECT output_item FROM recipes WHERE output_item IS NOT NULL", "SELECT item_id FROM recipe_reagents",
                  "SELECT item_id FROM craft_results WHERE item_id IS NOT NULL")
 

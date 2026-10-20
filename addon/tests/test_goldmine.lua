@@ -374,16 +374,112 @@ C_AuctionHouse.GetOwnedAuctionInfo = function(i)
                 bidAmount = 4000, timeLeftSeconds = 3600, status = 1 } })[i]
 end
 C_AuctionHouse.GetItemKeyInfo = function(key) return { isCommodity = key.itemID == 2589 } end
+C_AuctionHouse.PostCommodity = function() end
+C_AuctionHouse.CancelAuction = function() end
 fire("AUCTION_HOUSE_SHOW")
-expect("no owned-auction query by default", queried == 0)
-GoldmineDB.settings.queryOwnedAuctions = true
+advance(1)
+expect("owned auctions requested when the AH opens", queried == 1, queried)
+C_AuctionHouse.PostCommodity(2589, 40, 18)
+C_AuctionHouse.PostCommodity(2589, 40, 18)
+fire("AUCTION_HOUSE_AUCTION_CREATED", 77)
+advance(3)
+expect("one debounced request after a burst of posts", queried == 2, queried)
+C_AuctionHouse.CancelAuction(501)
+advance(3)
+expect("requested again after a cancel", queried == 3, queried)
+GoldmineDB.settings.queryOwnedAuctions = false
 fire("AUCTION_HOUSE_SHOW")
-expect("owned-auction query when opted in", queried == 1)
+C_AuctionHouse.PostCommodity(2589, 1, 18)
+advance(3)
+expect("no requests when turned off", queried == 3, queried)
 GoldmineDB.settings.queryOwnedAuctions = nil
 fire("OWNER_AUCTIONS_UPDATED")
 local owned = GoldmineDB.chars["Snow-Testrealm"].auctions
 expect("owned auctions recorded", #owned.list == 2 and owned.list[1].id == 501 and owned.list[1].cm == 1
     and owned.list[1].b == 18 and owned.list[2].cm == 0 and owned.list[2].st == 1 and owned.list[2].tl == 3600)
+
+-- Professions on login, and one reminder per session for uncatalogued ones.
+local profs = { [1] = { "Tailoring", 90, 100, 197 }, [2] = { "Alchemy", 30, 100, 171 }, [4] = { "Fishing", 5, 100, 356 } }
+function GetProfessions() return 1, 2, nil, 4, nil end
+function GetProfessionInfo(i)
+    local p = profs[i]
+    return p[1], 0, p[2], p[3], 0, 0, p[4]
+end
+local before = #printed
+fire("PLAYER_ENTERING_WORLD", false, false)
+advance(6)
+local pinfo = GoldmineDB.chars["Snow-Testrealm"].profInfo
+expect("professions recorded on login", pinfo.Tailoring.rank == 90 and pinfo.Alchemy.max == 100
+    and pinfo.Fishing.line == 356)
+expect("reminder names only the uncatalogued crafting profession", #printed == before + 1
+    and printed[#printed]:find("Alchemy") ~= nil and printed[#printed]:find("Tailoring") == nil
+    and printed[#printed]:find("Fishing") == nil, printed[#printed])
+fire("PLAYER_ENTERING_WORLD", false, false)
+advance(6)
+expect("reminder only once per session", #printed == before + 1)
+
+-- Auction mail: invoices and sold/expired/won mail, recognized again on the next inbox update.
+local mailbox = {
+    { "Auction House", "Auction successful: Linen Cloth", 1710, 0, 29.5, false,
+      { "seller", "Linen Cloth", "Buyerguy", 1800, 1800, 30, 90, 0, 0, 0, 100 } },
+    { "Auction House", "Auction successful: Linen Cloth", 1710, 0, 29.5, false,
+      { "seller", "Linen Cloth", "Buyerguy", 1800, 1800, 30, 90, 0, 0, 0, 100 } }, -- an identical second sale
+    { "Auction House", "Auction expired: Bolt of Linen Cloth", 0, 0, 29.9, true, nil, { "Bolt of Linen Cloth", 2996, 0, 5 } },
+    { "Auction House", "Auction won: Wool Cloth", 0, 0, 29, true,
+      { "buyer", "Wool Cloth", "Sellerguy", 0, 400, 0, 0, 0, 0, 0, 20 }, { "Wool Cloth", 2592, 0, 20 } },
+    { "Altchar", "gold", 50000, 0, 3, false },
+}
+function GetInboxNumItems() return #mailbox end
+GetInboxHeaderInfo = function(i)
+    local m = mailbox[i]
+    return nil, nil, m[1], m[2], m[3], m[4], m[5], m[6]
+end
+GetInboxInvoiceInfo = function(i) if mailbox[i][7] then return unpack(mailbox[i][7]) end end
+function GetInboxItem(i) if mailbox[i][8] then return unpack(mailbox[i][8]) end end
+fire("MAIL_INBOX_UPDATE")
+advance(2)
+local mail = GoldmineDB.mail
+expect("auction mail recorded, other mail skipped", #mail == 4, #mail)
+expect("sale invoice fields", mail[1].kind == "sold" and mail[1].inv == "seller" and mail[1].who == "Buyerguy"
+    and mail[1].buy == 1800 and mail[1].dep == 30 and mail[1].cut == 90 and mail[1].n == 100 and mail[1].money == 1710)
+expect("expired mail carries the returned item", mail[3].kind == "expired" and mail[3].iid == 2996 and mail[3].n == 5
+    and mail[3].item == "Bolt of Linen Cloth")
+expect("won mail", mail[4].kind == "won" and mail[4].inv == "buyer" and mail[4].iid == 2592)
+advance(600)
+for _, m in ipairs(mailbox) do m[5] = m[5] - 600 / 86400 end -- ten minutes later
+table.remove(mailbox, 3) -- the expired item was taken
+fire("MAIL_INBOX_UPDATE")
+advance(2)
+expect("same mails aren't recorded twice", #mail == 4, #mail)
+table.insert(mailbox, 1, { "Auction House", "Auction successful: Linen Cloth", 1710, 0, 30, false,
+    { "seller", "Linen Cloth", "Buyerguy", 1800, 1800, 30, 90, 0, 0, 0, 100 } })
+fire("MAIL_INBOX_UPDATE")
+advance(2)
+expect("a new identical sale is a new mail", #mail == 5 and mail[5].id == "Snow-Testrealm:m5")
+
+-- Crafting orders: read after the crafting orders UI requests them.
+local orders = {
+    { orderID = 9001, itemID = 2996, spellID = 100, orderType = 0, orderState = 0, expirationTime = time() + 3600,
+      minQuality = 2, tipAmount = 50000, consortiumCut = 2500, isFulfillable = true, customerName = "Buyer",
+      reagents = { { reagentSlot = 1, reagent = { itemID = 2589, quantity = 2 } } } },
+    { orderID = 9002, itemID = 2996, spellID = 100, orderType = 3, npcCustomerCreatureID = 12345, tipAmount = 10000,
+      npcOrderRewards = { { itemLink = "|cff|Hitem:210814::::|h[Artisan's Acuity]|h|r", count = 3 } } },
+}
+C_CraftingOrders = {
+    RequestCrafterOrders = function() end,
+    GetCrafterOrders = function() return orders end,
+    GetCrafterBuckets = function() return { { itemID = 2996, spellID = 100, numAvailable = 4, tipAmountAvg = 30000,
+                                              tipAmountMax = 60000 } } end,
+}
+fire("TRADE_SKILL_SHOW")
+advance(2)
+C_CraftingOrders.RequestCrafterOrders({})
+advance(5)
+local co = GoldmineDB.craftOrders
+expect("crafting orders recorded", co and co[9001] and co[9001].tip == 50000 and co[9001].minq == 2
+    and co[9001].rg[1] == 2589 and co[9001].rg[2] == 2 and co[9001].who == "Buyer")
+expect("patron order rewards", co[9002].type == 3 and co[9002].rw[1] == 210814 and co[9002].rw[2] == 3)
+expect("order buckets", GoldmineDB.craftBuckets["Snow-Testrealm"].list[1].n == 4)
 
 ---------------------------------------------------------------------------
 -- Advice.lua: tooltips and commands from pushed Data.lua

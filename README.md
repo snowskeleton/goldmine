@@ -8,7 +8,8 @@ export to CSV.
 addon/Goldmine/
   Goldmine.lua    money ledger: every gold change + its source
   Market.lua      records AH prices you browse, your recipes (+ crafting operation info) and craft
-                  results, bags/bank/warband contents and warband gold, your own auctions
+                  results, professions, bags/bank/warband contents and warband gold, your own
+                  auctions, AH mail (sale invoices), crafting orders
   Advice.lua      price tooltips, /goldmine crafts, /goldmine deals (from Data.lua)
   Data.lua        downloaded from the server by `goldmine.py push` (not in git; the addon works without it)
 server/           Goldmine server (Docker): does all the work and stores everything
@@ -237,6 +238,9 @@ The tests run against a mock, so these need checking in the real client
   `C_TradeSkillUI.GetCraftingOperationInfo(recipeID, {}, nil, false)` / the
   `TRADE_SKILL_ITEM_CRAFTED_RESULT` payload fields (`multicraft`, `resourcesReturned`,
   `concentrationSpent`) match what Market.lua reads.
+- Crafting orders: that `C_CraftingOrders.GetCrafterOrders()`/`GetCrafterBuckets()` hold the
+  orders the tab last requested (read after hooking `RequestCrafterOrders`), and the
+  `CRAFTINGORDERS_*` event names.
 - Whether `GetRepairAllCost()` still returns the cost immediately after `RepairAllItems()`.
   If not, repairs are still labeled correctly, just matched by sign instead of amount.
 
@@ -304,18 +308,29 @@ read-only, see `docs/trader.md`):
 
 | MCP tool | |
 |---|---|
-| `get_account` | gold per character and in the warband bank, `total_gold`, last-seen times (character, bags, bank, auctions, professions), latest WoW token price |
+| `get_account` | gold per character and in the warband bank, `total_gold`, last-seen times (character, bags, bank, auctions, professions), each character's professions (skill, `needs_catalogue`), latest WoW token price |
 | `get_inventory` | items in bags/bank/warband: total `count` and `held` by owner and location (`char`, `location`, `items` filters) |
 | `get_owned_auctions` | your auctions from each character's latest Auctions-tab list: unit price, quantity, active/sold, time left; `include_ended` adds ones that dropped off the list |
 | `get_ledger` | gold changes newest first, with per-source totals (`since`/`until` as unix seconds, `7d`, or a date; `source`, `item`, `char`) |
 | `get_recipes` | known recipes, reagents, and crafting operation info (skill vs difficulty, expected quality, multicraft/resourcefulness %, concentration cost), and concentration per profession |
 | `get_craft_results` | crafts made (quality, multicraft, resources returned, concentration) and per-recipe proc rates |
 | `get_token_price` | WoW token price, latest and history (a row per change, collected with the AH snapshots) |
+| `get_auction_mail` | AH mail seen in the inbox: sale invoices (buyer, bid/buyout, deposit, AH cut, money received), won/outbid/expired/cancelled; `sales_by_item` totals |
+| `get_crafting_orders` | crafting orders the crafting orders window showed (public, guild, personal, patron): commission, min quality, reagents provided, patron rewards, expiry; plus the public order board |
 | `get_item_info` | vendor sell/buy price, binding (`bound`), stack size, class, expansion: Blizzard's item API (cached by the collector for items you own or craft) plus what the game client reported |
 
-The addon sends no AH queries for this: owned auctions come from the list the Auctions tab
-requests. To have it request that list itself whenever the AH opens, run
-`/run GoldmineDB.settings.queryOwnedAuctions = true` once (default off).
+The only request the addon sends itself is for your own auction list, when the AH opens and
+a couple of seconds after you post or cancel (debounced). `/run GoldmineDB.settings.queryOwnedAuctions = false`
+turns that off. Everything else is read from what the game UI already loaded: the inbox
+(mail has no id, so a mail is recognized by its contents and its arrival time estimated
+from days left), the crafting orders the orders tab requested, and `GetProfessions()` on
+login. On login the addon also prints, once per session, which profession windows to open
+because their recipes were never catalogued or are more than a week old.
+
+`C_AuctionHouse.ReplicateItems` (a full realm AH snapshot) is deliberately not used: since
+the 9.0.2 hotfix it returns no seller names except your own, so it adds nothing over the hourly
+API snapshots. It is also known to disconnect clients on realms with more than ~80k auctions,
+which includes Proudmoore.
 
 `claude mcp get goldmine` should say "Connected". `--scope user` makes it available in every
 project; leave it out to register it for the current folder only. Keep the key out of shared

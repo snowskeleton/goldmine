@@ -199,7 +199,8 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(set(tools), {"list_markets", "search_items", "get_current_prices", "get_price_history",
                                       "get_market_values", "get_deals", "get_crafts", "get_account", "get_inventory",
                                       "get_owned_auctions", "get_ledger", "get_recipes", "get_craft_results",
-                                      "get_token_price", "get_item_info"})
+                                      "get_token_price", "get_item_info", "get_auction_mail",
+                                      "get_crafting_orders"})
         self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in tools.values()))
         res = self.rpc("tools/call", {"name": "get_price_history", "arguments": {
             "market": "us-testrealm", "item": "Linen Cloth", "since": T0, "resolution": "raw"}}).json()["result"]

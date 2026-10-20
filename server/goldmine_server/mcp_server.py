@@ -58,7 +58,8 @@ _offset = {"type": "integer", "minimum": 0, "default": 0}
 ACCOUNT_TOOLS = [
     _tool("get_account", "Account balances",
           "Gold (copper) per character and in the warband bank, total_gold, when each was last seen (and when "
-          "its bags, bank, auctions and professions were), and the latest WoW token price per region.",
+          "its bags, bank, auctions and professions were), each character's professions (skill, max_skill, "
+          "needs_catalogue = recipes missing or over a week old), and the latest WoW token price per region.",
           {"realm": {"type": "string", "description": "Only characters on this realm, e.g. Proudmoore"}},
           [], lambda conn, **kw: acct.account(conn, **kw), user_db=True),
     _tool("get_inventory", "Inventory",
@@ -107,6 +108,24 @@ ACCOUNT_TOOLS = [
           "stack_size, class/subclass, expansion, level. From the Blizzard item API (cached for items you own or "
           "craft) and the game client; sources says which answered.",
           {"items": _items}, ["items"], lambda conn, items: acct.item_info(conn, items), user_db=True),
+    _tool("get_auction_mail", "Auction mail",
+          "AH mail from your inboxes, newest first: sale invoices (player = buyer, bid/buyout, deposit, "
+          "consignment = AH cut, money = what you received; the ground-truth sale prices), won, outbid, expired "
+          "and cancelled auctions; plus sales_by_item totals. invoice seller_temp_invoice = sold, money pending. "
+          "Default: last 30 days.",
+          {"since": _since, "char": _char,
+           "kind": {"type": "string", "enum": ["sold", "won", "outbid", "expired", "cancelled"]},
+           "item": {"type": ["integer", "string"], "description": "Item id or name"},
+           "player": {"type": "string", "description": "Buyer or seller name"}, "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.auction_mail(conn, **kw), user_db=True),
+    _tool("get_crafting_orders", "Crafting orders",
+          "Crafting orders your characters saw in the crafting orders window (public, guild, personal, patron), "
+          "highest commission (tip, copper) first: item, recipe, min_quality, reagents_provided, patron rewards, "
+          "expires; and public_board, the public order buckets (available, tip_avg, tip_max) as last seen.",
+          {"order_type": {"type": "string", "enum": ["public", "guild", "personal", "patron"]},
+           "recipe": {"type": "integer"}, "item": {"type": ["integer", "string"], "description": "Item id or name"},
+           "active_only": {"type": "boolean", "default": True}, "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.crafting_orders(conn, **kw), user_db=True),
 ]
 
 TOOLS = [

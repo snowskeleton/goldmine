@@ -156,8 +156,19 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(q("SELECT char_key, count FROM owned_auction_lists"), [("Snow-Testrealm", 2)])
         self.assertEqual(q("SELECT recipe_id, base_skill, difficulty, quality, concentration_cost, multicraft, "
                            "resourcefulness FROM recipe_ops"), [(100, 80, 100, 2, 30, 12.5, 9)])
-        self.assertEqual(q("SELECT profession, concentration, concentration_max FROM professions"),
-                         [("Tailoring", 640, 1000)])
+        self.assertEqual(q("SELECT profession, concentration, concentration_max, skill, max_skill FROM professions "
+                           "ORDER BY profession"),
+                         [("Alchemy", None, None, 30, 100), ("Fishing", None, None, 5, 100),
+                          ("Tailoring", 640, 1000, 90, 100)])
+        self.assertEqual(q("SELECT kind, invoice, item_name, quantity, player, buyout, deposit, consignment, money "
+                           "FROM auction_mail WHERE id = 'Snow-Testrealm:m1'"),
+                         [("sold", "seller", "Linen Cloth", 100, "Buyerguy", 1800, 30, 90, 1710)])
+        self.assertEqual(q("SELECT COUNT(*), COUNT(DISTINCT arrived) FROM auction_mail"), [(5, 4)])
+        self.assertEqual(q("SELECT item_id, quantity FROM auction_mail WHERE kind = 'expired'"), [(2996, 5)])
+        self.assertEqual(q("SELECT order_id, order_type, tip, min_quality, reagents, rewards FROM crafting_orders "
+                           "ORDER BY order_id"),
+                         [(9001, 0, 50000, 2, "[[2589, 2]]", "[]"), (9002, 3, 10000, None, "[]", "[[210814, 3]]")])
+        self.assertEqual(q("SELECT recipe_id, available, tip_max FROM crafting_order_buckets"), [(100, 4, 60000)])
         self.assertEqual(q("SELECT id, recipe_id, item_id, quantity, quality, multicraft, concentration, returned "
                            "FROM craft_results"), [("Snow-Testrealm:c1", 100, 2996, 2, 3, 1, 30, "[[2589, 1]]")])
         meta = {r[0]: r[1:] for r in q("SELECT item_id, stack_size, sell_price, class_id, expansion FROM item_meta")}

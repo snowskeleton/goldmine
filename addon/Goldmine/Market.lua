@@ -1,11 +1,16 @@
 -- Goldmine market data: passively records what the game already shows you.
 --
---   * AH prices from searches you run (commodity, item, and browse results). No queries are
---     sent on your behalf; this only reads results the AH UI requested.
---   * Your learned recipes and their reagents (when a profession window is open).
+--   * AH prices from searches you run (commodity, item, and browse results). No price queries
+--     are sent on your behalf; this only reads results the AH UI requested.
+--   * Your learned recipes and their reagents (when a profession window is open), and every
+--     character's professions and skill (on login), with a reminder to open a profession
+--     window whose recipes are missing or more than a week old.
 --   * Bag, bank, and warband bank contents, and the gold in the warband bank.
---   * Your own auctions, when the AH's Auctions tab lists them (OWNER_AUCTIONS_UPDATED). Set
---     GoldmineDB.settings.queryOwnedAuctions = true to also ask for that list when the AH opens.
+--   * Your own auctions (OWNER_AUCTIONS_UPDATED). Goldmine asks for that list when the AH opens
+--     and after you post or cancel; GoldmineDB.settings.queryOwnedAuctions = false turns that off.
+--   * Auction house mail in your inbox: sale invoices (buyer, price, deposit, cut), and won,
+--     outbid, expired and cancelled auctions.
+--   * Crafting orders the crafting orders window shows you (public, guild, personal, patron).
 --   * Crafting operation info per recipe (skill, difficulty, expected quality, multicraft/
 --     resourcefulness, concentration cost) and the result of every craft you make.
 --   * Stack size, binding, expansion and vendor price of items you hold.
@@ -21,6 +26,10 @@ local MAX_OWNED = 1000       -- owned auctions kept per snapshot
 local MAX_OPS = 400          -- recipes per profession that get crafting operation info
 local MAX_CRAFTS = 5000      -- stored craft results; oldest are dropped
 local MAX_ITEM_INFO = 5000   -- items with cached stack size / binding / expansion
+local MAX_MAIL = 5000        -- stored auction mails; oldest are dropped
+local MAX_ORDERS = 2000      -- stored crafting orders; oldest are dropped
+local STALE_RECIPES = 7 * 86400 -- remind to open a profession window after this long
+local MAIL_MATCH = 3600      -- seconds: the same mail's estimated arrival drifts less than this
 
 local frame = CreateFrame("Frame")
 local handlers = {}
@@ -255,6 +264,7 @@ end
 
 function handlers.TRADE_SKILL_SHOW()
     InstallCraftHook()
+    if ns.HookOrders then ns.HookOrders() end -- the crafting orders tab lives in this window
     handlers.TRADE_SKILL_LIST_UPDATE()
 end
 
@@ -284,12 +294,29 @@ function handlers.OWNER_AUCTIONS_UPDATED()
     ns.char.auctions = { t = time(), list = list }
 end
 
+-- The one AH query Goldmine sends itself: your own auction list (approved; off with
+-- GoldmineDB.settings.queryOwnedAuctions = false). Debounced, so a burst of posts asks once.
+local function QueryOwned(delay)
+    local ah = C_AuctionHouse
+    local settings = ns.db and ns.db.settings
+    if not (ah and ah.QueryOwnedAuctions) or (settings and settings.queryOwnedAuctions == false) then return end
+    Debounce("owned", delay, function() Safe(ah.QueryOwnedAuctions, {}) end)
+end
+
+local postHooked = false
 function handlers.AUCTION_HOUSE_SHOW()
     local ah = C_AuctionHouse
-    if ns.db and ns.db.settings and ns.db.settings.queryOwnedAuctions and ah and ah.QueryOwnedAuctions then
-        Safe(ah.QueryOwnedAuctions, {}) -- opt-in only: the one query Goldmine sends itself
+    if not postHooked and ah and hooksecurefunc then
+        postHooked = true
+        for _, name in ipairs({ "PostItem", "PostCommodity", "CancelAuction" }) do
+            if ah[name] then hooksecurefunc(ah, name, function() QueryOwned(2) end) end
+        end
     end
+    QueryOwned(0.5)
 end
+
+function handlers.AUCTION_HOUSE_AUCTION_CREATED() QueryOwned(2) end
+handlers.AUCTION_CANCELED = handlers.AUCTION_HOUSE_AUCTION_CREATED
 
 ---------------------------------------------------------------------------
 -- Inventory
@@ -392,9 +419,226 @@ function handlers.ACCOUNT_MONEY()
     if bankOpen then ScanWarbandMoney() end
 end
 
+---------------------------------------------------------------------------
+-- Professions (every login): which ones each character has, and a nudge to catalogue them
+---------------------------------------------------------------------------
+
+local reminded = false
+
+local function ScanProfessions()
+    local char = ns.char
+    if not (char and GetProfessions and GetProfessionInfo) then return end
+    local p1, p2, arch, fish, cook = GetProfessions()
+    local profs, stale = {}, {}
+    for slot, index in pairs({ p1, p2, arch, fish, cook }) do
+        local name, _, rank, maxRank, _, _, skillLine = GetProfessionInfo(index)
+        if name then
+            profs[name] = { rank = rank, max = maxRank, line = skillLine, t = time() }
+            local known = char.professions and char.professions[name]
+            -- archaeology (3) and fishing (4) have no recipes
+            if slot ~= 3 and slot ~= 4 and (not known or time() - (known.t or 0) > STALE_RECIPES) then
+                stale[#stale + 1] = name
+            end
+        end
+    end
+    char.profInfo = profs
+    if #stale > 0 and not reminded then
+        reminded = true
+        table.sort(stale)
+        local msg = "|cffe6b422Goldmine|r: open your " .. table.concat(stale, ", ")
+            .. " window" .. (#stale > 1 and "s" or "") .. " once so the trader sees your recipes."
+        if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage(msg) end
+    end
+end
+
 function handlers.PLAYER_ENTERING_WORLD()
     Debounce("bags", 3, function() ScanInventory(false) end)
+    Debounce("profs", 5, ScanProfessions)
 end
+handlers.SKILL_LINES_CHANGED = function() Debounce("profs", 2, ScanProfessions) end
+
+---------------------------------------------------------------------------
+-- Auction house mail
+---------------------------------------------------------------------------
+
+-- Subject patterns from the client's own format strings (English fallbacks).
+local function SubjectPattern(fmt, fallback)
+    fmt = type(fmt) == "string" and fmt or fallback
+    return "^" .. fmt:gsub("([%%%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%%%s", "(.+)") .. "$"
+end
+
+local mailKinds -- built on first use, after the client's globals exist
+local function MailKind(subject)
+    if not mailKinds then
+        mailKinds = {
+            { "sold", SubjectPattern(AUCTION_SOLD_MAIL_SUBJECT, "Auction successful: %s") },
+            { "won", SubjectPattern(AUCTION_WON_MAIL_SUBJECT, "Auction won: %s") },
+            { "outbid", SubjectPattern(AUCTION_OUTBID_MAIL_SUBJECT, "Outbid on %s") },
+            { "expired", SubjectPattern(AUCTION_EXPIRED_MAIL_SUBJECT, "Auction expired: %s") },
+            { "cancelled", SubjectPattern(AUCTION_REMOVED_MAIL_SUBJECT, "Auction cancelled: %s") },
+        }
+    end
+    for _, k in ipairs(mailKinds) do
+        local item = type(subject) == "string" and subject:match(k[2])
+        if item then return k[1], item end
+    end
+end
+
+-- Mail has no id, so a mail is recognized by its contents plus its arrival time (estimated
+-- from daysLeft; auction mail lasts 30 days). Identical mails are told apart by count.
+local function ScanMail()
+    local db = ns.db
+    if not (db and ns.charKey and GetInboxNumItems) then return end
+    db.mail = db.mail or {}
+    db.mailSeq = db.mailSeq or 0
+    local now = time()
+    local byKey = {}
+    for _, m in ipairs(db.mail) do
+        if m.c == ns.charKey and now - m.arr < 31 * 86400 then
+            byKey[m.k] = byKey[m.k] or {}
+            table.insert(byKey[m.k], m)
+        end
+    end
+    local used = {}
+    for i = 1, GetInboxNumItems() do
+        local _, _, sender, subject, money, cod, daysLeft, hasItem = GetInboxHeaderInfo(i)
+        local kind, subjectItem = MailKind(subject)
+        local ok, invoiceType, itemName, player, bid, buyout, deposit, consignment, _, _, _, count
+        if GetInboxInvoiceInfo then
+            ok, invoiceType, itemName, player, bid, buyout, deposit, consignment, _, _, _, count
+                = pcall(GetInboxInvoiceInfo, i)
+            if not ok then invoiceType = nil end
+        end
+        if kind or invoiceType then
+            local itemID, itemCount
+            if hasItem then
+                local got, _, id, _, n = pcall(GetInboxItem, i, 1)
+                if got then itemID, itemCount = id, n end
+            end
+            local key = table.concat({ kind or "", invoiceType or "", itemName or subjectItem or "", player or "",
+                tostring(bid or 0), tostring(buyout or 0), tostring(deposit or 0), tostring(consignment or 0),
+                tostring(money or 0), tostring(itemID or 0), tostring(count or itemCount or 0) }, "|")
+            local arr = now - math.floor((30 - (daysLeft or 30)) * 86400)
+            local match
+            for _, m in ipairs(byKey[key] or {}) do
+                if not used[m] and math.abs(m.arr - arr) <= MAIL_MATCH then match = m; break end
+            end
+            if match then
+                used[match] = true
+                match.seen = now
+            else
+                db.mailSeq = db.mailSeq + 1
+                local m = {
+                    id = ns.charKey .. ":m" .. db.mailSeq, c = ns.charKey, k = key, arr = arr, seen = now,
+                    kind = kind, inv = invoiceType, item = itemName or subjectItem, iid = itemID,
+                    n = count or itemCount, who = player, bid = bid, buy = buyout, dep = deposit,
+                    cut = consignment, money = money, cod = cod, from = sender,
+                }
+                db.mail[#db.mail + 1] = m
+                used[m] = true
+            end
+        end
+    end
+    if #db.mail > MAX_MAIL + 500 then
+        local kept = {}
+        for i = #db.mail - MAX_MAIL + 1, #db.mail do kept[#kept + 1] = db.mail[i] end
+        db.mail = kept
+    end
+end
+
+function handlers.MAIL_INBOX_UPDATE()
+    Debounce("mail", 1, ScanMail)
+end
+
+---------------------------------------------------------------------------
+-- Crafting orders
+---------------------------------------------------------------------------
+
+local function ItemIDFromLink(link)
+    return type(link) == "string" and tonumber(link:match("|Hitem:(%d+)")) or nil
+end
+
+-- Reads the orders the crafting orders window last requested (no requests of our own).
+local function ScanOrders()
+    local co = C_CraftingOrders
+    local db = ns.db
+    if not (co and db and ns.charKey) then return end
+    db.craftOrders = db.craftOrders or {}
+    local now = time()
+    local n = 0
+    for _, o in ipairs(Safe(co.GetCrafterOrders) or {}) do
+        if o.orderID then
+            local reagents = {}
+            for _, r in ipairs(o.reagents or {}) do
+                local item = r.reagent or r.reagentInfo or {}
+                if item.itemID then
+                    reagents[#reagents + 1] = item.itemID
+                    reagents[#reagents + 1] = item.quantity or 1
+                end
+            end
+            local rewards = {}
+            for _, r in ipairs(o.npcOrderRewards or {}) do
+                local id = ItemIDFromLink(r.itemLink)
+                if id then
+                    rewards[#rewards + 1] = id
+                    rewards[#rewards + 1] = r.count or 1
+                end
+            end
+            local prev = db.craftOrders[o.orderID]
+            db.craftOrders[o.orderID] = {
+                c = ns.charKey, first = prev and prev.first or now, seen = now, type = o.orderType,
+                state = o.orderState, item = o.itemID, r = o.spellID, minq = o.minQuality, tip = o.tipAmount,
+                cut = o.consortiumCut, exp = o.expirationTime, claim = o.claimEndTime,
+                recraft = o.isRecraft or nil, ok = o.isFulfillable, rstate = o.reagentState,
+                who = o.customerName, npc = o.npcCustomerCreatureID, rg = reagents, rw = rewards,
+            }
+            n = n + 1
+        end
+    end
+    local buckets = {}
+    for _, b in ipairs(Safe(co.GetCrafterBuckets) or {}) do
+        buckets[#buckets + 1] = { item = b.itemID, r = b.skillLineAbilityID or b.spellID, n = b.numAvailable,
+                                  avg = b.tipAmountAvg, max = b.tipAmountMax }
+    end
+    if #buckets > 0 then
+        db.craftBuckets = db.craftBuckets or {}
+        db.craftBuckets[ns.charKey] = { t = now, list = buckets }
+    end
+    -- Keep the newest MAX_ORDERS.
+    local count, oldest, oldestID = 0, nil, nil
+    for _ in pairs(db.craftOrders) do count = count + 1 end
+    while count > MAX_ORDERS do
+        oldest, oldestID = nil, nil
+        for id, o in pairs(db.craftOrders) do
+            if not oldest or o.seen < oldest then oldest, oldestID = o.seen, id end
+        end
+        db.craftOrders[oldestID] = nil
+        count = count - 1
+    end
+    return n
+end
+
+local ordersHooked = false
+local function HookOrders()
+    local co = C_CraftingOrders
+    if ordersHooked or not (co and hooksecurefunc) then return end
+    ordersHooked = true
+    for _, name in ipairs({ "RequestCrafterOrders" }) do
+        if co[name] then
+            hooksecurefunc(co, name, function()
+                Debounce("orders", 1.5, ScanOrders)
+                C_Timer.After(4, ScanOrders) -- slow responses
+            end)
+        end
+    end
+end
+
+function handlers.CRAFTINGORDERS_SHOW_CRAFTER()
+    HookOrders()
+    Debounce("orders", 1.5, ScanOrders)
+end
+handlers.CRAFTINGORDERS_UPDATE_ORDER_COUNT = function() Debounce("orders", 1.5, ScanOrders) end
+handlers.CRAFTINGORDERS_HIDE_CRAFTER = function() ScanOrders() end
 
 ---------------------------------------------------------------------------
 
@@ -407,3 +651,6 @@ for event in pairs(handlers) do
 end
 
 ns.SaveScan = SaveScan -- for tests
+ns.ScanOrders = ScanOrders
+ns.HookOrders = HookOrders
+HookOrders()

@@ -122,7 +122,11 @@ class AccountTests(unittest.TestCase):
         self.assertEqual((op["skill"], op["difficulty"], op["quality"], op["concentration_cost"], op["multicraft"]),
                          (85, 100, 2, 30, 12.5))
         self.assertEqual(op["stats"]["Resourcefulness"], 9)
-        self.assertEqual(r["professions"][0]["concentration"], 640)
+        profs = {x["profession"]: x for x in r["professions"]}
+        self.assertEqual((profs["Tailoring"]["concentration"], profs["Tailoring"]["skill"]), (640, 90))
+        # The fixture's catalogue is old; Alchemy was never opened; Fishing has no recipes.
+        self.assertEqual({k: v["needs_catalogue"] for k, v in profs.items()},
+                         {"Tailoring": True, "Alchemy": True, "Fishing": False})
         self.assertEqual(account.recipes(self.conn, item=WOOL)["recipes"], [])
 
     def test_craft_results(self):
@@ -148,6 +152,33 @@ class AccountTests(unittest.TestCase):
         self.assertEqual((r[SILK]["binding"], r[SILK]["bound"], r[SILK]["stack_size"]), ("ON_ACQUIRE", True, 200))  # the game client's stack size wins
         self.assertEqual((r[BOLT]["sources"], r[BOLT]["stack_size"], r[BOLT]["expansion"]), (["game"], 200, 0))
         self.assertEqual((r[999999]["sources"], r[999999]["bound"]), ([], None))
+
+    def test_professions_in_account(self):
+        (c,) = account.account(self.conn)["characters"]
+        self.assertEqual(sorted(p["profession"] for p in c["professions"]), ["Alchemy", "Fishing", "Tailoring"])
+
+    def test_auction_mail(self):
+        r = self.call("get_auction_mail", since=0)
+        self.assertEqual(r["total"], 5)
+        (linen,) = r["sales_by_item"]
+        self.assertEqual((linen["sales"], linen["quantity"], linen["gross"], linen["net"], linen["buyers"],
+                          linen["avg_unit_price"]), (3, 300, 5400, 5130, 1, 18))
+        sold = self.call("get_auction_mail", since=0, kind="sold", item=LINEN)["mail"]
+        self.assertEqual({(m["player"], m["unit_price"]) for m in sold}, {("Buyerguy", 18)})
+        self.assertEqual(account.auction_mail(self.conn, since=0, player="Sellerguy")["mail"][0]["kind"], "won")
+        self.assertEqual(account.auction_mail(self.conn)["total"], 0)  # the fixture is older than 30 days
+
+    def test_crafting_orders(self):
+        active = self.call("get_crafting_orders")["orders"]
+        self.assertEqual([o["order_id"] for o in active], [9002])  # 9001 expired long ago
+        r = self.call("get_crafting_orders", active_only=False)
+        first = r["orders"][0]
+        self.assertEqual((first["order_id"], first["type"], first["tip"], first["name"], first["reagents_provided"]),
+                         (9001, "public", 50000, "Bolt of Linen Cloth",
+                          [{"item_id": LINEN, "name": "Linen Cloth", "quantity": 2}]))
+        self.assertEqual(r["orders"][1]["rewards"], [{"item_id": 210814, "name": None, "count": 3}])
+        self.assertEqual(r["public_board"][0]["available"], 4)
+        self.assertEqual(self.call("get_crafting_orders", order_type="patron", active_only=False)["total"], 1)
 
     def test_bad_since(self):
         r = self.api.post("/api/v1/mcp", headers=self.h, json={
