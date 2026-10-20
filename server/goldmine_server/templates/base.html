@@ -30,6 +30,9 @@
   </main>
   <footer>Goldmine {{ version }}</footer>
   <script src="/static/app.js?v={{ version }}"></script>
+  {# Wowhead item tooltips on hover, for links to wowhead.com and links with data-wowhead; it leaves our link text and colours alone. #}
+  <script>var whTooltips = { colorLinks: false, iconizeLinks: false, renameLinks: false };</script>
+  <script src="https://wow.zamimg.com/js/tooltips.js" async></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -203,7 +203,8 @@ def reports_page(request: Request, kind: str = "crafts", item: str = "", days: i
             else {"history": True} if kind == "deals" else {}
         data = services.report_data(user.id, kind, **kw)
     return page(request, "reports.html", user, kinds=REPORT_KINDS, kind=kind, item=item, days=days, hours=hours,
-                data=data, gold=services.reports.gold, wowhead=services.reports.wowhead_url)
+                data=data, gold=services.reports.gold, wowhead=services.reports.wowhead_url,
+                wowhead_data=services.reports.wowhead_data)
 
 
 @app.get("/web/timing")

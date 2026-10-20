@@ -17,8 +17,8 @@
 
 {% macro item_cell(id, name, game='retail', sub=none) -%}
 <td class="item" data-v="{{ name }}">
-  <a class="iname" href="/reports?kind=price&amp;item={{ id }}" title="Price history for {{ name }} ({{ id }})">{{ name }}</a>
-  <span class="ilinks"><a href="/reports?kind=timing&amp;item={{ id }}" title="When it sells">timing</a><a href="{{ wowhead(id, game) }}" target="_blank" rel="noopener" title="{{ name }} on Wowhead">wowhead&nbsp;↗</a></span>
+  <a class="iname" href="/reports?kind=price&amp;item={{ id }}" data-wowhead="{{ wowhead_data(id, game) }}">{{ name }}</a>
+  <span class="ilinks"><a href="/reports?kind=timing&amp;item={{ id }}" title="When it sells">timing</a><a href="{{ wowhead(id, game) }}" target="_blank" rel="noopener">wowhead&nbsp;↗</a></span>
   {%- if sub %}<div class="isub">{{ sub }}</div>{% endif %}
 </td>
 {%- endmacro %}

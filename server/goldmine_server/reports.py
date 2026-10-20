@@ -26,6 +26,12 @@ def wowhead_url(item_id: int, game: str | None = None) -> str:
     return WOWHEAD.get(game or "retail", WOWHEAD["retail"]).format(item_id)
 
 
+def wowhead_data(item_id: int, game: str | None = None) -> str:
+    """A data-wowhead value, so Wowhead's tooltip script shows the item on hover over any link."""
+    domain = wowhead_url(item_id, game).removeprefix("https://www.wowhead.com/").partition("item=")[0].strip("/")
+    return f"item={item_id}" + (f"&domain={domain}" if domain else "")
+
+
 def gold(copper: int | None, signed: bool = False) -> str:
     """Money at a sensible precision, truncated like the game: 19,999g from 100g, 12g 34s from 1g, else 4s 79c."""
     if copper is None:
