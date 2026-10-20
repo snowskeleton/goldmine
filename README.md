@@ -351,9 +351,15 @@ client registration, so only connectors you create can ask you to sign in.
 **Claude Code.** Run the desktop client as a local MCP server. It uses the client's own
 connection (`[server] url` and `key` in `~/.goldmine/config.toml`), forwards every server tool,
 and adds the tools only this computer can run: `sync` (upload SavedVariables, then refresh
-Data.lua and Tasks.lua), `push` (refresh the addon's Data.lua and Tasks.lua) and
+Data.lua and Tasks.lua), `push` (refresh the addon's Data.lua and Tasks.lua), `addon_status`
+(the plan on disk, the plan the addon last loaded, game data not uploaded yet) and
 `client_status` (the server, SavedVariables and when WoW last wrote them, installed addon
-copies, whether WoW is running). No key goes into Claude's config:
+copies, whether WoW is running). It also keeps the round trip with the addon safe on its own:
+before any tool that reads account state it uploads SavedVariables WoW wrote since their last
+upload (tracked in `~/.goldmine/uploads.json`), and `publish_plan` pushes Tasks.lua as soon as
+the server accepts the plan. When the addon loads a plan it records which one
+(`GoldmineDB.tasksLoaded`), and that comes back as `get_plan`'s `loaded_by`. No key goes into
+Claude's config:
 
 ```bash
 claude mcp add --scope user goldmine -- python3 /path/to/goldmine/desktop/goldmine.py mcp

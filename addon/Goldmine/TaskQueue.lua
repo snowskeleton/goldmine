@@ -128,6 +128,8 @@ function Q.Load()
     local p = GoldmineTasks
     if not (ns.db and type(p) == "table" and p.plan and type(p.tasks) == "table") then return end
     Q.plan = p
+    -- Acknowledgement for the trader: which plan this client actually loaded, and when.
+    ns.db.tasksLoaded = { plan = p.plan, generated = p.generated, t = time(), c = ns.charKey }
     for i, r in ipairs(Results()) do resultIndex[r.id] = i end
     for i, t in ipairs(p.tasks) do
         Q.tasks[i] = t

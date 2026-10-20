@@ -190,6 +190,49 @@ def status_cmd(args) -> int:
     return 0
 
 
+def _uploads_path(args) -> Path:
+    return Path(getattr(args, "config", DEFAULT_CONFIG)).expanduser().parent / "uploads.json"
+
+
+def uploaded(args) -> dict:
+    """{SavedVariables path: {"mtime", "server", "at"}} for the last successful upload of each file."""
+    try:
+        return json.loads(_uploads_path(args).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def record_upload(args, path: Path, mtime: float, server_base: str) -> None:
+    state = uploaded(args)
+    state[str(path)] = {"mtime": mtime, "server": server_base, "at": int(time.time())}
+    target = _uploads_path(args)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=1))
+        tmp.replace(target)
+    except OSError:
+        pass  # only an optimization for `mcp`'s freshness checks
+
+
+def pending_uploads(args) -> list[Path]:
+    """SavedVariables files WoW wrote since they were last uploaded to the configured server."""
+    state, out = uploaded(args), []
+    try:
+        base = server(args).base
+    except (NoServer, remote.RemoteError):
+        base = None
+    for p in find_saved_variables(wow_dirs(args)):
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        rec = state.get(str(p))
+        if not rec or rec.get("server") != base or m > rec.get("mtime", 0):
+            out.append(p)
+    return out
+
+
 def sync_cmd(args) -> int:
     rem = server(args)
     paths = [Path(p) for p in args.file] if args.file else find_saved_variables(wow_dirs(args))
@@ -200,8 +243,10 @@ def sync_cmd(args) -> int:
     errors = 0
     for p in paths:
         try:
+            mtime = p.stat().st_mtime
             r = rem.upload_saved_variables(p.read_bytes(), source=str(p))
             print(f"{p}: {r['new']} new of {r['total']} entries (uploaded to {rem.base})")
+            record_upload(args, p, mtime, rem.base)
         except (OSError, remote.RemoteError) as exc:
             print(f"{p}: FAILED: {exc}", file=sys.stderr)
             errors += 1

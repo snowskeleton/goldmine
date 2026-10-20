@@ -140,7 +140,9 @@ TASK_TOOLS = [
           ["plan"], lambda conn, plan: tasks.publish(conn, plan), user_db=True, read_only=False),
     _tool("get_plan", "Get plan",
           "The active plan (or the one with this id), each task with its latest result from the addon "
-          "(status done/partial/skipped/blocked/below_floor/expired, qty, seen = live unit price, paid, reason).",
+          "(status done/partial/skipped/blocked/below_floor/expired, qty, seen = live unit price, paid, reason). "
+          "loaded_by: characters whose addon loaded this plan (at login or /reload), from their last upload; "
+          "addon_last_loaded: the plan the addon loaded most recently.",
           {"plan": _plan_id}, [], lambda conn, plan=None: tasks.get_plan(conn, plan), user_db=True),
     _tool("get_task_results", "Task results",
           "What happened to tasks in game, newest first: status, qty, seen (live unit price the human saw, "

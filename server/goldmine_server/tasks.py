@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS task_results (
     imported  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS task_results_plan ON task_results(plan, ts);
+CREATE TABLE IF NOT EXISTS plan_loads (  -- the addon's acknowledgement: the plan it last loaded, per character
+    char_key   TEXT PRIMARY KEY,
+    plan       TEXT NOT NULL,
+    generated  INTEGER,                  -- Tasks.lua's generated time
+    ts         INTEGER NOT NULL          -- when the addon loaded it (login or /reload)
+);
 """
 
 STATUSES = ("done", "partial", "skipped", "blocked", "below_floor", "expired")
@@ -236,15 +242,25 @@ def get_plan(conn, plan: str | None = None, now: int | None = None) -> dict:
         row = conn.execute("SELECT body, published, superseded_by FROM plans WHERE superseded_by IS NULL "
                            "AND expires > ? ORDER BY published DESC LIMIT 1", (now,)).fetchone()
     if not row:
-        return {"plan": None, "note": f"no plan {plan!r}" if plan else "no active plan"}
+        return {"plan": None, "note": f"no plan {plan!r}" if plan else "no active plan",
+                "addon_last_loaded": last_load(conn)}
     body = json.loads(row[0])
     results = {r["task"]: r for r in map(_result_row, conn.execute(
         "SELECT id, plan, task, char_key, ts, status, qty, seen, paid, reason, imported FROM task_results "
         "WHERE plan = ?", (body["plan"],)))}
     for t in body["tasks"]:
         t["result"] = results.get(t["id"])
+    loads = [{"character": c, "at": ts} for c, ts in conn.execute(
+        "SELECT char_key, ts FROM plan_loads WHERE plan = ? ORDER BY ts DESC", (body["plan"],))]
     return {"plan": body, "published": row[1], "superseded_by": row[2],
-            "active": row[2] is None and body["expires"] > now, "expired": body["expires"] <= now}
+            "active": row[2] is None and body["expires"] > now, "expired": body["expires"] <= now,
+            "loaded_by": loads, "addon_last_loaded": last_load(conn)}
+
+
+def last_load(conn) -> dict | None:
+    """The plan the addon most recently loaded (any character), from its last upload."""
+    row = conn.execute("SELECT char_key, plan, generated, ts FROM plan_loads ORDER BY ts DESC LIMIT 1").fetchone()
+    return dict(zip(("character", "plan", "generated", "at"), row)) if row else None
 
 
 def get_results(conn, plan: str | None = None, since: int | None = None, limit: int = 200,
@@ -269,6 +285,12 @@ def get_results(conn, plan: str | None = None, since: int | None = None, limit: 
 def import_results(conn, data: dict, now: int | None = None) -> int:
     """Upsert GoldmineDB.taskResults by id (the addon updates a partial result in place). Returns
     how many rows were new or changed."""
+    loaded = data.get("tasksLoaded")
+    if isinstance(loaded, dict) and isinstance(loaded.get("plan"), str) and loaded.get("c") and loaded.get("t"):
+        conn.execute("""INSERT INTO plan_loads (char_key, plan, generated, ts) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(char_key) DO UPDATE SET plan=excluded.plan, generated=excluded.generated,
+                          ts=excluded.ts WHERE excluded.ts >= plan_loads.ts""",
+                     (loaded["c"], loaded["plan"], loaded.get("generated"), loaded["t"]))
     rows = data.get("taskResults") or []
     if isinstance(rows, dict):  # sparse Lua table
         rows = [rows[k] for k in sorted(rows)]

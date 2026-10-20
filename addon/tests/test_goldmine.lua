@@ -890,6 +890,9 @@ load({ plan = "p-test-2", created = T, expires = T + 3600, paper = false, budget
     { id = "b1", kind = "buy", item = 5000, qty = 2, max_unit = 10000, est_min = 1 },
 } })
 expect("reload restores partial progress", Q.state.b1.done == 1 and Q.state.b1.paid == 9000 and Q.Finished(Q.byId.b1))
+local ack = GoldmineDB.tasksLoaded
+expect("loading a plan records which one, for the server", ack and ack.plan == "p-test-2" and ack.c == "Snow-Testrealm"
+    and ack.t ~= nil)
 
 expect("every protected call came from a click", outsideClick == 0, outsideClick .. " outside a click")
 expect("never more than one protected call per click", maxPerClick == 1, "max " .. maxPerClick)

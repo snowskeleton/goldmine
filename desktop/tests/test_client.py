@@ -45,6 +45,8 @@ class StubServer:
         self.addon_zip = zip_addon(REPO_ADDON)
         self.uploads = []
         self.mcp_calls = []
+        self.active_plan = None   # what the stub's get_plan reports
+        self.last_load = None
         self.tasks_lua = b"GoldmineTasks = { generated = 1, tasks = {} }\n"  # None: a server without the queue
         stub = self
 
@@ -95,6 +97,16 @@ class StubServer:
                 if self.path == "/api/v1/mcp":
                     msg = json.loads(body)
                     stub.mcp_calls.append(msg)
+                    p = msg.get("params") or {}
+                    if msg["method"] == "tools/call" and p.get("name") == "get_plan":
+                        sc = {"plan": {"plan": stub.active_plan} if stub.active_plan else None, "loaded_by": [],
+                              "addon_last_loaded": stub.last_load}
+                        self.send(200, {"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [], "structuredContent": sc}})
+                        return
+                    if msg["method"] == "tools/call" and p.get("name") == "publish_plan":
+                        sc = {"plan": p["arguments"]["plan"]["plan"], "active": True}
+                        self.send(200, {"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [], "structuredContent": sc}})
+                        return
                     result = {"initialize": {"instructions": "stub server"},
                               "tools/list": {"tools": [{"name": "list_markets"}, {"name": "sync"}]},
                               "tools/call": {"content": [{"type": "text", "text": "echo"}],
@@ -270,7 +282,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
         self.assertTrue(init["result"]["instructions"].startswith("stub server "))
         names = [t["name"] for t in listed["result"]["tools"]]
-        self.assertEqual(names, ["sync", "push", "client_status", "list_markets"])  # the local sync wins
+        self.assertEqual(names, ["sync", "push", "addon_status", "client_status", "list_markets"])  # the local sync wins
         self.assertEqual(fwd["result"]["structuredContent"], {"name": "list_markets", "arguments": {}})
         st = status["result"]["structuredContent"]
         self.assertEqual((st["server"], st["me"]["user"], len(st["saved_variables"])), (self.server.url, "snow", 1))
@@ -284,6 +296,43 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(parse_err["error"]["code"], -32700)
         self.assertEqual({m["method"] for m in self.server.mcp_calls}, {"initialize", "tools/list", "tools/call"})
 
+    def test_mcp_keeps_reads_fresh_and_delivers_plans(self):
+        self.cli("addon", "install", "--flavor", "_retail_", *self.wow_args())
+        sv = self.wow / "_retail_" / "WTF" / "Account" / "ACCT" / "SavedVariables" / "Goldmine.lua"
+        sv.parent.mkdir(parents=True)
+        sv.write_text("GoldmineDB = {}")
+        call = lambda i, name, **a: {"jsonrpc": "2.0", "id": i, "method": "tools/call",  # noqa: E731
+                                     "params": {"name": name, "arguments": a}}
+        texts = lambda r: [c["text"] for c in r["result"]["content"]]  # noqa: E731
+        before = len(self.server.uploads)
+        acct, again, market = self.mcp(call(1, "get_account"), call(2, "get_account"), call(3, "list_markets"))[:3]
+        self.assertIn("auto-synced 1 SavedVariables file first", texts(acct))
+        self.assertFalse(any("auto-synced" in t for t in texts(again) + texts(market)))
+        self.assertEqual(len(self.server.uploads), before + 1)
+        os.utime(sv, (sv.stat().st_mtime + 10,) * 2)  # WoW wrote it again (a /reload)
+        (ledger,) = self.mcp(call(1, "get_ledger"))[:1]
+        self.assertIn("auto-synced 1 SavedVariables file first", texts(ledger))
+
+        self.server.active_plan = "p1"
+        (st,) = self.mcp(call(1, "addon_status"))[:1]
+        self.assertEqual(st["result"]["structuredContent"]["state"], "not_delivered")
+        old_lua = self.server.tasks_lua
+        self.server.tasks_lua = b'GoldmineTasks = {\n  generated = 5,\n  plan = "p1", tasks = {} }\n'
+        try:
+            pub, st = self.mcp(call(1, "publish_plan", plan={"plan": "p1"}), call(2, "addon_status"))[:2]
+            self.assertTrue(pub["result"]["structuredContent"]["delivered"]["ok"], pub)
+            self.assertIn("pushed Tasks.lua to the addon", texts(pub)[-1])
+            self.assertIn(b'plan = "p1"', (self.dest() / "Tasks.lua").read_bytes())
+            s1 = st["result"]["structuredContent"]
+            self.assertEqual((s1["state"], s1["tasks_on_disk"][0]["plan"], s1["tasks_on_disk"][0]["generated"]),
+                             ("delivered", "p1", 5))
+            self.assertFalse(s1["saved_variables"][0]["pending_upload"])
+            self.server.last_load = {"character": "Snow-Proudmoore", "plan": "p1", "at": 6}
+            (st,) = self.mcp(call(1, "addon_status"))[:1]
+            self.assertEqual(st["result"]["structuredContent"]["state"], "loaded")
+        finally:
+            self.server.tasks_lua, self.server.active_plan, self.server.last_load = old_lua, None, None
+
     def test_mcp_without_a_server_still_answers(self):
         init, listed, fwd = self.mcp(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -291,7 +340,7 @@ class ClientTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_plan", "arguments": {}}},
             server=False)[:3]
         self.assertEqual(init["result"]["serverInfo"]["name"], "goldmine")
-        self.assertEqual([t["name"] for t in listed["result"]["tools"]], ["sync", "push", "client_status"])
+        self.assertEqual([t["name"] for t in listed["result"]["tools"]], ["sync", "push", "addon_status", "client_status"])
         self.assertTrue(fwd["result"]["isError"])
         self.assertIn("no Goldmine server configured", fwd["result"]["content"][0]["text"])
 

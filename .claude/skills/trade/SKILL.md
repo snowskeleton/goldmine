@@ -37,12 +37,16 @@ Pro plan, so make a few big tool calls rather than many small ones.
 
 ## 1. Sync and read state
 
-The `goldmine` MCP server is the local client (`goldmine.py mcp`): it forwards the server's tools
-with this computer's API key and adds `sync`, `push` and `client_status`. Call `sync` first: it
-uploads the latest SavedVariables and refreshes the addon's data. Its `saved_variables[].written`
-shows when WoW last wrote them; if that predates the user's last play, ask them to `/reload` and
-sync again. If sync fails, say so; the rest still works on older data. Then gather, in as few
-calls as possible:
+The `goldmine` MCP server is the local client (`goldmine.py mcp`), your only interface to the
+server and the addon; never read or write the game's files yourself. It forwards the server's
+tools with this computer's API key, syncs new SavedVariables automatically before any
+account-state read, and adds `sync`, `push`, `addon_status` and `client_status`.
+
+Start with `addon_status`. It shows whether the last plan was loaded (`state`: `loaded`,
+`delivered` but not yet loaded, or `not_delivered`) and when WoW last wrote SavedVariables. If
+the user has played since the last plan but SavedVariables are older than that, ask them to
+`/reload` so their results reach the server. If an auto-sync note says it failed, say so; the
+rest still works on older data. Then gather, in as few calls as possible:
 
 - `list_markets`: snapshot freshness for `us-proudmoore` and `us-commodities`. If the last
   snapshot is more than 3h old, warn and lean on `scan` tasks.
@@ -143,8 +147,9 @@ and publish again under a new id. Never loosen an exit or a floor just to get pa
 For each new position, `journal_write` a `hypothesis` with the strategy, items and
 `prediction: {buy, sell, days, realized_expected}`, with evidence pointing at the plan id.
 
-Then call `push` so `Tasks.lua` lands in the addon, and tell the user to `/reload` (or log in) and
-open `/goldmine tasks`.
+`publish_plan` pushes `Tasks.lua` to the addon by itself; check that its result says
+`delivered.ok`, and if not, call `push`. Tell the user to `/reload` (or log in) and open
+`/goldmine tasks`. The next run's `addon_status` confirms the addon loaded it.
 
 ## 8. Tell the user (short)
 

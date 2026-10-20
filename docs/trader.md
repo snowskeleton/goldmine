@@ -92,6 +92,16 @@ GoldmineDB.taskResults = {
 A skip opens a prompt asking why: preset buttons (too expensive, no time, out of bag space, don't
 trust it, other) plus free text.
 
+When the addon loads a plan (login or `/reload`) it writes `GoldmineDB.tasksLoaded = { plan,
+generated, t, c }`. That's the acknowledgement: after the next upload, `get_plan` lists the plan
+under `loaded_by`, and the local client's `addon_status` reports `loaded`.
+
+## The trader's interface
+
+The trader talks only to the local client (`goldmine.py mcp`), never to the game's files. Reads
+of account state sync new SavedVariables first, and `publish_plan` pushes `Tasks.lua` at once.
+`addon_status` shows the round trip: not delivered → delivered (on disk) → loaded (acknowledged).
+
 ## Account state the trader can read (MCP)
 
 Balances per character and in the warband bank; bags, bank and warband inventory; owned auctions

@@ -193,6 +193,19 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(rows), len(data["taskResults"]))
         self.assertTrue({r["status"] for r in rows} <= set(tasks.STATUSES))
         self.assertTrue(all(r["char"] == "Snow-Testrealm" for r in rows))
+        self.assertEqual(tasks.last_load(self.conn)["plan"], "p-test-2")  # the addon's acknowledgement
+
+    def test_plan_loads(self):
+        tasks.publish(self.conn, sample_plan(), NOW)
+        self.assertEqual(tasks.get_plan(self.conn, now=NOW)["loaded_by"], [])
+        ack = lambda c, t, plan="p2026-10-20a": {"tasksLoaded": {"plan": plan, "generated": NOW, "t": t, "c": c}}  # noqa: E731
+        tasks.import_results(self.conn, ack("Snow-Proudmoore", NOW + 10))
+        tasks.import_results(self.conn, ack("Alt-Proudmoore", NOW + 20))
+        tasks.import_results(self.conn, ack("Snow-Proudmoore", NOW + 5, "p-older"))  # an older upload doesn't win
+        got = tasks.get_plan(self.conn, now=NOW)
+        self.assertEqual(got["loaded_by"], [{"character": "Alt-Proudmoore", "at": NOW + 20},
+                                            {"character": "Snow-Proudmoore", "at": NOW + 10}])
+        self.assertEqual(got["addon_last_loaded"]["character"], "Alt-Proudmoore")
 
 
 class ApiTests(unittest.TestCase):
