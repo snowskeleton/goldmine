@@ -130,10 +130,17 @@ def user_db_path(user_id: int):
     return d / "game.sqlite"
 
 
+_migrated: set[str] = set()
+
+
 def user_conn(user_id: int) -> sqlite3.Connection:
     """Market DB with the user's game DB attached: what reports and imports run on."""
     path = user_db_path(user_id)
-    ledger.connect(str(path)).close()  # create/migrate the game tables in the user's file
+    if str(path) not in _migrated or not path.exists():
+        # Create/migrate the game tables in the user's file, once per process: the schema script
+        # takes a write lock, which would make every read wait behind a running import.
+        ledger.connect(str(path)).close()
+        _migrated.add(str(path))
     conn = market_conn()
     conn.execute("ATTACH DATABASE ? AS u", (str(path),))
     return conn

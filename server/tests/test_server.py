@@ -345,5 +345,28 @@ class ServerFlow(unittest.TestCase):
         self.assertEqual(r.status_code, 401)
 
 
+
+class CaptureTests(unittest.TestCase):
+    def test_reports_capture_their_own_output_concurrently(self):
+        import io
+        import threading
+        from goldmine_server import services
+        gate, out = threading.Barrier(4), {}
+
+        def run(n):
+            buf = io.StringIO()
+            with services.capture_stdout(buf):
+                gate.wait()  # all four capturing at once
+                for _ in range(200):
+                    print(n)
+            out[n] = buf.getvalue()
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in range(4)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        for n in range(4):
+            self.assertEqual(out[n], f"{n}\n" * 200)
+
+
 if __name__ == "__main__":
     unittest.main()

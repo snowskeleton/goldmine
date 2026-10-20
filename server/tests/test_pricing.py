@@ -54,6 +54,15 @@ class PricingTests(unittest.TestCase):
         # Each hour the previous 10-bolt auction vanished: 4 intervals x 10 over 4 hours.
         self.assertAlmostEqual(bolt.sold_per_day, 40 / (4 / 24))
 
+    def test_market_stats_cache_follows_new_snapshots(self):
+        before = pricing.price_table(self.conn, now=NOW)[(BOLT, 0)]
+        self.assertEqual(pricing.price_table(self.conn, now=NOW)[(BOLT, 0)].market_value, before.market_value)
+        # A new snapshot with pricier bolts has to show up, not the cached stats.
+        store.store_snapshot(self.conn, "us-commodities", {"auctions": [commodity(30, BOLT, 10, 500)]}, NOW + HOUR)
+        self.conn.commit()
+        after = pricing.price_table(self.conn, now=NOW + HOUR)[(BOLT, 0)]
+        self.assertGreater(after.market_value, before.market_value)
+
     def test_fresher_scan_overrides_current(self):
         self.conn.execute("INSERT INTO scans VALUES ('Snow-Testrealm:s1', 'Snow-Testrealm', ?, 'commodity')", (NOW + 600,))
         self.conn.executemany("INSERT INTO scan_rows VALUES ('Snow-Testrealm:s1', ?, 0, ?, ?)",

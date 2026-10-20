@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from . import store
@@ -93,6 +95,48 @@ def market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
     return out
 
 
+# market_stats replays every item state in the window, which is most of a report's time, yet its
+# result only changes when the market gets a new snapshot. Cache it per (database, market, window
+# start to the nearest STATS_BUCKET seconds, latest snapshot); concurrent requests for the same key
+# wait for one computation instead of each doing it.
+STATS_BUCKET = 600
+STATS_CACHE_SIZE = 32
+_stats_cache: OrderedDict = OrderedDict()
+_stats_locks: dict = {}
+_stats_guard = threading.Lock()
+
+
+def _db_file(conn) -> str:
+    return next((row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+
+
+def cached_market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
+    path = _db_file(conn)
+    if not path:  # in-memory databases can't be told apart; just compute
+        return market_stats(conn, market, since)
+    latest = conn.execute("SELECT MAX(id) FROM snapshots WHERE market = ?", (market,)).fetchone()[0]
+    key = (path, market, since // STATS_BUCKET, latest)
+    with _stats_guard:
+        if key in _stats_cache:
+            _stats_cache.move_to_end(key)
+            return _stats_cache[key]
+        lock = _stats_locks.setdefault(key, threading.Lock())
+    with lock:
+        with _stats_guard:
+            if key in _stats_cache:
+                return _stats_cache[key]
+        stats = market_stats(conn, market, since)
+        with _stats_guard:
+            # A newer snapshot makes this market's older entries dead weight.
+            for old in [k for k in _stats_cache if k[:2] == key[:2] and k[3] != latest]:
+                del _stats_cache[old]
+            _stats_cache[key] = stats
+            while len(_stats_cache) > STATS_CACHE_SIZE:
+                _stats_cache.popitem(last=False)
+            _stats_locks.pop(key, None)
+        return stats
+
+
 def price_table(conn, window_hours: int = 72, markets: list[str] | None = None,
                 now: int | None = None, scan_chars: list[str] | None = None) -> dict[tuple[int, int], Price]:
     """markets: limit to these market names (None = all). scan_chars: only use in-game scans
@@ -104,7 +148,7 @@ def price_table(conn, window_hours: int = 72, markets: list[str] | None = None,
 
     # Smoothed value and sales per market; when an item is in several markets keep the busiest.
     for mkt in mids:
-        for key, (mv, per_day) in market_stats(conn, mkt, since).items():
+        for key, (mv, per_day) in cached_market_stats(conn, mkt, since).items():
             cur = table.get(key)
             if cur and cur.sold_per_day >= per_day:
                 continue

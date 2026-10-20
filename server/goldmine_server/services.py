@@ -6,16 +6,55 @@ import argparse
 import gzip
 import io
 import os
+import sys
 import threading
-from contextlib import redirect_stdout
+import time
+from contextlib import contextmanager
 
 from fastapi import HTTPException
 
 from . import db, ledger, pricing, settings, svparse
 from .collector import load_config
 
-# The report functions print to stdout; redirect_stdout is process-wide, so they run one at a time.
-_report_lock = threading.Lock()
+class _ThreadStdout:
+    """sys.stdout stand-in that sends a thread's prints to its own buffer while it's capturing.
+    The report functions print; redirect_stdout swaps stdout for the whole process, which forced
+    reports to run one at a time. This lets each request thread capture only its own output."""
+
+    def __init__(self, fallback):
+        self.fallback = fallback
+        self.local = threading.local()
+
+    def _target(self):
+        buf = getattr(self.local, "buf", None)
+        return self.fallback if buf is None else buf
+
+    def write(self, s):
+        return self._target().write(s)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._target(), name)
+
+
+_install_lock = threading.Lock()
+_addon_locks: dict[int, threading.Lock] = {}
+
+
+@contextmanager
+def capture_stdout(buf):
+    """Send this thread's prints to buf; other threads (and other requests) are unaffected."""
+    with _install_lock:
+        if not isinstance(sys.stdout, _ThreadStdout):
+            sys.stdout = _ThreadStdout(sys.stdout)
+        proxy = sys.stdout
+    proxy.local.buf = buf
+    try:
+        yield buf
+    finally:
+        proxy.local.buf = None
 
 
 def cli_args(conn, **kw) -> argparse.Namespace:
@@ -29,7 +68,7 @@ def run_report(user_id: int, fn, **kw) -> str:
     conn = db.user_conn(user_id)
     try:
         buf = io.StringIO()
-        with _report_lock, redirect_stdout(buf):
+        with capture_stdout(buf):
             fn(cli_args(conn, **kw))
         return buf.getvalue()
     finally:
@@ -46,13 +85,42 @@ REPORTS = {
 }
 
 
+# Finished reports, reused until new AH data or game data arrives (or REPORT_TTL passes, since some
+# windows are relative to now), so flipping between report tabs doesn't recompute each one.
+REPORT_TTL = 600
+_report_cache: dict = {}
+_report_guard = threading.Lock()
+
+
+def data_version(user_id: int) -> tuple:
+    """Changes whenever the market DB gets a snapshot or the user's game DB is written."""
+    path = db.user_db_path(user_id)
+    stamps = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in (path, f"{path}-wal"))
+    conn = db.market_conn()
+    try:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM snapshots").fetchone()[0], stamps
+    finally:
+        conn.close()
+
+
 def report(user_id: int, kind: str, **kw) -> str:
     fn = REPORTS.get(kind)
     if fn is None:
         raise HTTPException(404, f"unknown report {kind!r}")
     if kind in ("price", "timing") and not kw.get("item"):
         raise HTTPException(400, "item is required")
-    return run_report(user_id, fn, **kw)
+    key = (user_id, kind, tuple(sorted(kw.items())))
+    version = data_version(user_id)
+    with _report_guard:
+        hit = _report_cache.get(key)
+    if hit and hit[0] == version and time.time() - hit[1] < REPORT_TTL:
+        return hit[2]
+    text = run_report(user_id, fn, **kw)
+    with _report_guard:
+        for k in [k for k, v in _report_cache.items() if time.time() - v[1] >= REPORT_TTL]:
+            del _report_cache[k]
+        _report_cache[key] = (version, time.time(), text)
+    return text
 
 
 def export_csv(user_id: int, **filters) -> str:
@@ -89,17 +157,22 @@ def addon_data(user_id: int) -> bytes:
     user_dir = settings.USERS_DIR / str(user_id)
     out = user_dir / "Data.lua"
     stamp_file = user_dir / "Data.lua.stamp"
+    with _install_lock:
+        lock = _addon_locks.setdefault(user_id, threading.Lock())
     conn = db.user_conn(user_id)
     try:
         latest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM snapshots").fetchone()[0]
         stamp = f"{latest}:{os.path.getmtime(db.user_db_path(user_id))}"
         if out.exists() and stamp_file.exists() and stamp_file.read_text() == stamp:
             return out.read_bytes()
-        args = cli_args(conn, addon_data=str(out))
-        with _report_lock, redirect_stdout(io.StringIO()):
-            ledger.push(conn, args, load_config())
-        stamp_file.write_text(stamp)
-        return out.read_bytes()
+        with lock:  # one build per user at a time; whoever waited gets the fresh file
+            if out.exists() and stamp_file.exists() and stamp_file.read_text() == stamp:
+                return out.read_bytes()
+            args = cli_args(conn, addon_data=str(out))
+            with capture_stdout(io.StringIO()):
+                ledger.push(conn, args, load_config())
+            stamp_file.write_text(stamp)
+            return out.read_bytes()
     finally:
         conn.close()
 

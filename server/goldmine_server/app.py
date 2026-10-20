@@ -12,6 +12,7 @@ from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth, db, ledger, market, marketdata, mcp_server, oauth, releases, services, settings, tasks
@@ -217,6 +218,22 @@ def save_config(cfg: dict) -> None:
     tmp.replace(settings.CONFIG)
 
 
+# The realm list takes several paged Blizzard API calls and hardly ever changes, so the Markets
+# page doesn't wait on them every time it loads.
+REALMS_TTL = 6 * 3600
+_realms_cache: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def realms_for(api: dict, region: str, namespace: str) -> list[dict]:
+    hit = _realms_cache.get((region, namespace))
+    if hit and time.time() - hit[0] < REALMS_TTL:
+        return hit[1]
+    client = market.Client(api.get("client_id", ""), api.get("client_secret", ""), cache_dir=settings.CACHE_DIR)
+    realms = ledger.list_realms(client, region, namespace)
+    _realms_cache[(region, namespace)] = (time.time(), realms)
+    return realms
+
+
 @app.get("/markets", response_class=HTMLResponse)
 def markets_page(request: Request, region: str = "us", game: str = "", namespace: str = "",
                  user: User = Depends(auth.require_admin)):
@@ -231,8 +248,7 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
     if namespace:
         api = cfg.get("api") or {}
         try:
-            client = market.Client(api.get("client_id", ""), api.get("client_secret", ""), cache_dir=settings.CACHE_DIR)
-            realms = ledger.list_realms(client, region, namespace)
+            realms = realms_for(api, region, namespace)
         except Exception as exc:
             error = str(exc)
     conn = db.market_conn()
@@ -442,7 +458,9 @@ def api_me(user: User = Depends(auth.client_user)):
 @app.post("/api/v1/game-data")
 async def api_game_data(request: Request, source: str = "upload", user: User = Depends(auth.client_user)):
     body = await request.body()
-    return services.import_saved_variables(user.id, body, request.headers.get("content-encoding"), source)
+    # Parsing and importing take a while; on the event loop they'd stall every other request.
+    return await run_in_threadpool(services.import_saved_variables, user.id, body,
+                                   request.headers.get("content-encoding"), source)
 
 
 @app.get("/api/v1/addon-data")
@@ -514,7 +532,8 @@ async def api_release_app(request: Request, platform: str = "macos", notes: str 
                           user: User = Depends(auth.client_user)):
     if not user.is_admin:
         raise HTTPException(403, "admins only")
-    return releases.save_app_release(platform, await request.body(), notes)
+    body = await request.body()
+    return await run_in_threadpool(releases.save_app_release, platform, body, notes)
 
 
 # Read-only market data (/api/v1/market/*) and the same as MCP tools (/api/v1/mcp).

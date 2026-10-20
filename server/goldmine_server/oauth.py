@@ -24,6 +24,7 @@ from urllib.parse import unquote_plus, urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import auth, db
 from .auth import User
@@ -226,9 +227,15 @@ def _pkce_ok(verifier: str, challenge: str) -> bool:
     return 43 <= len(verifier) <= 128 and secrets.compare_digest(digest, challenge)
 
 
+# The token endpoints read the form asynchronously, then do their database work on a worker
+# thread: SQLite calls on the event loop would stall every other request while they wait.
 @router.post("/oauth/token")
 async def token(request: Request):
     form = await request.form()
+    return await run_in_threadpool(_token, request, form)
+
+
+def _token(request: Request, form):
     client_id, secret = _client_auth(request, form)
     with db.server_conn() as conn:
         client = _client(conn, client_id)
@@ -276,6 +283,10 @@ async def token(request: Request):
 async def revoke(request: Request):
     """RFC 7009: always 200, whether or not the token existed."""
     form = await request.form()
+    return await run_in_threadpool(_revoke, request, form)
+
+
+def _revoke(request: Request, form):
     client_id, secret = _client_auth(request, form)
     with db.server_conn() as conn:
         client = _client(conn, client_id)
