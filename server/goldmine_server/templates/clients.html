@@ -1,16 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Clients · {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Client keys</h1>
-<p class="muted">A client key lets the Goldmine Mac app upload your game data and download prices. Each key is
-  shown once, inside a connection URL; paste that URL into the app's Settings.</p>
+<h1>Clients</h1>
+<p class="muted">The Goldmine Mac app and command-line client sign in with an <strong>API key</strong>.
+  Claude and other MCP connectors sign in with <strong>OAuth</strong> and get read-only access to market data.</p>
 
-{% if new_url %}
+{% if new_key %}
 <section class="card highlight">
-  <h2>New connection URL</h2>
-  <p>Copy it now; it won't be shown again. Anyone with this URL can act as you through the client API.</p>
-  <div class="row"><input id="newurl" value="{{ new_url }}" readonly class="mono grow">
-    <button onclick="copyField('newurl', this)">Copy</button></div>
+  <h2>New API key</h2>
+  <p>Copy the key now; it won't be shown again. Anyone with it can act as you through the client API.
+    In the app, paste both into Settings → Goldmine server.</p>
+  <label class="small muted" for="srvurl">Server</label>
+  <div class="row"><input id="srvurl" value="{{ server_url }}" readonly class="mono grow">
+    <button onclick="copyField('srvurl', this)">Copy</button></div>
+  <label class="small muted" for="newkey">API key</label>
+  <div class="row"><input id="newkey" value="{{ new_key }}" readonly class="mono grow">
+    <button onclick="copyField('newkey', this)">Copy</button></div>
+</section>
+{% endif %}
+
+{% if new_client %}
+<section class="card highlight">
+  <h2>New connector credentials</h2>
+  <p>Copy the secret now; it won't be shown again. In Claude: <em>Settings → Connectors → Add custom connector</em>,
+    paste the server URL, open <em>Advanced settings</em> and paste the client ID and secret. You'll be sent here to
+    approve it with your passkey.</p>
+  <label class="small muted" for="mcpurl">MCP server URL</label>
+  <div class="row"><input id="mcpurl" value="{{ mcp_url }}" readonly class="mono grow">
+    <button onclick="copyField('mcpurl', this)">Copy</button></div>
+  <label class="small muted" for="cid">OAuth client ID</label>
+  <div class="row"><input id="cid" value="{{ new_client.id }}" readonly class="mono grow">
+    <button onclick="copyField('cid', this)">Copy</button></div>
+  <label class="small muted" for="csecret">OAuth client secret</label>
+  <div class="row"><input id="csecret" value="{{ new_client.secret }}" readonly class="mono grow">
+    <button onclick="copyField('csecret', this)">Copy</button></div>
 </section>
 {% endif %}
 
@@ -33,9 +56,11 @@
 </section>
 
 <section class="card">
+  <h2>API keys</h2>
+  <p class="muted small">Server address: <code>{{ server_url }}</code></p>
   <form method="post" action="/clients" class="row">
     <input name="name" placeholder="Key name, e.g. MacBook" maxlength="60">
-    <button class="primary">Generate connection URL</button>
+    <button class="primary">Generate API key</button>
   </form>
   <table>
     <tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr>
@@ -47,6 +72,34 @@
         <form method="post" action="/clients/{{ k.id }}/revoke" class="inline" onsubmit="return confirm('Revoke {{ k.name }}?')"><button class="link danger">Revoke</button></form>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="5" class="muted">No keys yet.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section class="card">
+  <h2>Connectors (MCP)</h2>
+  <p class="muted small">MCP server URL: <code>{{ mcp_url }}</code>. Connectors get read-only market data (prices,
+    history, deals, your craft report) and nothing else.</p>
+  <form method="post" action="/clients/oauth">
+    <div class="row">
+      <input name="name" placeholder="Connector name, e.g. Claude" maxlength="60">
+      <button class="primary">Generate client ID and secret</button>
+    </div>
+    <details class="small">
+      <summary class="muted">Redirect URIs (Claude's are filled in for you)</summary>
+      <textarea name="redirects" rows="3" class="mono grow" placeholder="{{ default_redirects|join('\n') }}"></textarea>
+      <p class="muted">One per line; leave empty for Claude. Loopback callbacks (http://localhost:any-port) always work.</p>
+    </details>
+  </form>
+  <table>
+    <tr><th>Name</th><th>Client ID</th><th>Created</th><th>Last sign-in</th><th>Connections</th><th></th></tr>
+    {% for c in oauth_clients %}
+    <tr class="{{ 'revoked' if c.revoked }}">
+      <td>{{ c.name }}</td><td><code>{{ c.client_id[:14] }}…</code></td><td>{{ c.created|ago }}</td>
+      <td>{{ c.last_used|ago }}</td><td>{{ c.active if not c.revoked else '' }}</td>
+      <td>{% if c.revoked %}<span class="muted">revoked</span>{% else %}
+        <form method="post" action="/clients/oauth/{{ c.client_id }}/revoke" class="inline" onsubmit="return confirm('Revoke {{ c.name }}? Connected apps lose access.')"><button class="link danger">Revoke</button></form>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="muted">No connectors yet.</td></tr>{% endfor %}
   </table>
 </section>
 {% endblock %}

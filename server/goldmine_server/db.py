@@ -56,6 +56,38 @@ CREATE TABLE IF NOT EXISTS client_keys (
     last_ip    TEXT,
     revoked    INTEGER
 );
+-- OAuth clients (Claude connectors and other MCP clients), created on the Clients page.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id      TEXT PRIMARY KEY,
+    secret_hash    TEXT NOT NULL,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL,
+    redirect_uris  TEXT NOT NULL,        -- JSON list; loopback URIs match on any port
+    created        INTEGER NOT NULL,
+    last_used      INTEGER,
+    revoked        INTEGER
+);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+    code_hash       TEXT PRIMARY KEY,
+    client_id       TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    redirect_uri    TEXT NOT NULL,
+    code_challenge  TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    resource        TEXT,
+    expires         INTEGER NOT NULL,
+    used            INTEGER
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash  TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,          -- access | refresh
+    client_id   TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scope       TEXT NOT NULL,
+    created     INTEGER NOT NULL,
+    expires     INTEGER NOT NULL,
+    revoked     INTEGER
+);
 """
 
 

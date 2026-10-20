@@ -24,6 +24,7 @@ struct MainView: View {
 struct ConnectView: View {
     @EnvironmentObject var engine: Engine
     @State private var url = ""
+    @State private var key = ""
     @State private var reveal = false
     @State private var working = false
     @State private var result: (Bool, String)?
@@ -35,13 +36,10 @@ struct ConnectView: View {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 6) {
                 Text("1. Open your server in a browser and sign in.")
-                Text("2. On the **Clients** page, generate a connection URL and copy it.")
-                Text("3. Paste it here. It starts with https://gm_… (an invite link won't work).")
+                Text("2. On the **Clients** page, generate an API key.")
+                Text("3. Paste the server address and the key here. Keys start with gm_ (an invite link won't work).")
             }
-            HStack {
-                ServerURLField(url: $url, reveal: reveal)
-                Button(reveal ? "Hide" : "Show") { reveal.toggle() }
-            }
+            ServerFields(url: $url, key: $key, reveal: $reveal)
             HStack {
                 if let (ok, text) = result {
                     Label(text, systemImage: ok ? "checkmark.circle" : "xmark.octagon")
@@ -52,11 +50,12 @@ struct ConnectView: View {
                     Task {
                         working = true
                         defer { working = false }
-                        result = await engine.checkServer(url)
-                        if result?.0 == true { _ = await engine.connect(url) }
+                        result = await engine.checkServer(url, key: key)
+                        if result?.0 == true { _ = await engine.connect(url, key: key) }
                     }
                 }
-                .disabled(working || url.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(working || url.trimmingCharacters(in: .whitespaces).isEmpty
+                          || key.trimmingCharacters(in: .whitespaces).isEmpty)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
             }
@@ -70,16 +69,21 @@ struct ConnectView: View {
     }
 }
 
-/// The connection URL holds a client key, so it's masked unless revealed.
-struct ServerURLField: View {
+/// Server address and API key. The key is masked unless revealed.
+struct ServerFields: View {
     @Binding var url: String
-    let reveal: Bool
+    @Binding var key: String
+    @Binding var reveal: Bool
 
     var body: some View {
-        if reveal {
-            TextField("Connection URL", text: $url, prompt: Text("https://gm_…@gold.example.com"))
-        } else {
-            SecureField("Connection URL", text: $url, prompt: Text("https://gm_…@gold.example.com"))
+        TextField("Server", text: $url, prompt: Text("https://gold.example.com"))
+        HStack {
+            if reveal {
+                TextField("API key", text: $key, prompt: Text("gm_…"))
+            } else {
+                SecureField("API key", text: $key, prompt: Text("gm_…"))
+            }
+            Button(reveal ? "Hide" : "Show") { reveal.toggle() }
         }
     }
 }
@@ -259,24 +263,24 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Goldmine server") {
+                ServerFields(url: $engine.settings.serverURL, key: $engine.settings.apiKey, reveal: $reveal)
                 HStack {
-                    ServerURLField(url: $engine.settings.serverURL, reveal: reveal)
-                    Button(reveal ? "Hide" : "Show") { reveal.toggle() }
+                    Spacer()
                     Button(checking ? "Testing…" : "Test") {
                         Task {
                             checking = true
-                            serverResult = await engine.checkServer(engine.settings.serverURL)
+                            serverResult = await engine.checkServer(engine.settings.serverURL, key: engine.settings.apiKey)
                             checking = false
                         }
                     }
-                    .disabled(checking || engine.settings.serverURL.isEmpty)
+                    .disabled(checking || engine.settings.serverURL.isEmpty || engine.settings.apiKey.isEmpty)
                 }
                 if let (ok, text) = serverResult {
                     Label(text, systemImage: ok ? "checkmark.circle" : "xmark.octagon")
                         .foregroundStyle(ok ? .green : .red)
                 }
                 HStack {
-                    Text("To switch servers or keys, paste a new connection URL from the server's Clients page and press Save.")
+                    Text("To switch servers or keys, paste a new address or API key (from the server's Clients page) and press Save.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Disconnect…", role: .destructive) { confirmDisconnect = true }
@@ -311,7 +315,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .confirmationDialog("Disconnect from \(engine.serverDisplayURL?.host ?? "the server")?", isPresented: $confirmDisconnect) {
-            Button("Disconnect", role: .destructive) { Task { _ = await engine.connect("") } }
+            Button("Disconnect", role: .destructive) { Task { _ = await engine.connect("", key: "") } }
         } message: {
             Text("Goldmine stops uploading game data and updating the addon until you connect again. Your data stays on the server.")
         }

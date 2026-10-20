@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Connect {{ client.name }} · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="narrow card">
+  <h1>Connect {{ client.name }}?</h1>
+  <p><strong>{{ client.name }}</strong> wants read-only access to this server's auction house data as
+    <strong>{{ user.name }}</strong>: markets, prices, price history, deals, and your craft report.</p>
+  <p class="muted small">It can't change anything, upload game data, or see your ledger. You'll go back to
+    <code>{{ redirect_host }}</code>. Revoke it any time on the Clients page.</p>
+  <form method="post" action="/oauth/authorize" class="row">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <button class="primary" name="decision" value="allow">Allow</button>
+    <button name="decision" value="deny">Deny</button>
+  </form>
+</section>
+{% endblock %}

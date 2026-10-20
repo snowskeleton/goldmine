@@ -16,8 +16,9 @@ Goldmine app) up to date. Goldmine.app runs it for all of that; it works on its 
   goldmine.py export gold.csv --since 30d   # your ledger as CSV
   goldmine.py addon status | install    # install or update the addon from the server
 
-Config: ~/.goldmine/config.toml, `[server] url = "https://gm_KEY@your.server"` (generate the URL
-on the server's Clients page), or pass --server. WoW only writes SavedVariables on logout,
+Config: ~/.goldmine/config.toml, `[server]` with `url = "https://your.server"` and `key = "gm_..."`
+(generate the key on the server's Clients page). --server overrides the address and the
+GOLDMINE_KEY environment variable the key. WoW only writes SavedVariables on logout,
 /reload, or exit, so that's when new data appears. Uploads are idempotent.
 """
 
@@ -96,17 +97,31 @@ def dump_toml(cfg: dict) -> str:
     return "\n".join(out)
 
 
+def normalize_server(cfg: dict) -> dict:
+    """Split an old-style [server] url = "https://gm_KEY@host" into url + key."""
+    srv = cfg.get("server")
+    if isinstance(srv, dict) and srv.get("url"):
+        try:
+            url, legacy_key = remote.split_url(srv["url"])
+        except remote.RemoteError:
+            return cfg
+        cfg = {**cfg, "server": {**srv, "url": url, **({"key": legacy_key} if legacy_key and not srv.get("key")
+                                                          else {})}}
+    return cfg
+
+
 def config_cmd(args) -> int:
     path = Path(args.config).expanduser()
     if args.action == "get":
-        print(json.dumps(load_config(path)))
+        print(json.dumps(normalize_server(load_config(path))))
         return 0
     cfg = json.load(sys.stdin)
     if not isinstance(cfg, dict):
         raise SystemExit("config must be a JSON object")
-    url = (cfg.get("server") or {}).get("url")
-    if url:
-        remote.Remote(url)  # refuse a URL that can't work (no key, wrong scheme)
+    cfg = normalize_server(cfg)
+    srv = cfg.get("server") or {}
+    if srv.get("url") or srv.get("key"):
+        remote.Remote(srv.get("url", ""), srv.get("key"))  # refuse settings that can't work
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         backup = path.with_suffix(".toml.bak")
@@ -122,17 +137,19 @@ def config_cmd(args) -> int:
 
 
 def server(args) -> remote.Remote:
-    """The configured Goldmine server ([server] url in config.toml, or --server)."""
-    url = getattr(args, "server", None)
+    """The configured Goldmine server: [server] url and key in config.toml, overridden by
+    --server (address) and GOLDMINE_KEY (key; kept off the command line, where ps shows it)."""
+    try:
+        srv = load_config(getattr(args, "config", DEFAULT_CONFIG)).get("server") or {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise NoServer(f"can't read {args.config}: {exc}") from exc
+    override = getattr(args, "server", None)
+    url = override or srv.get("url")
     if not url:
-        try:
-            url = (load_config(getattr(args, "config", DEFAULT_CONFIG)).get("server") or {}).get("url")
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise NoServer(f"can't read {args.config}: {exc}") from exc
-    if not url:
-        raise NoServer("no Goldmine server configured. Generate a connection URL on your server's Clients page, "
-                       f"then set [server] url in {DEFAULT_CONFIG} (or pass --server).")
-    return remote.Remote(url)
+        raise NoServer("no Goldmine server configured. Generate an API key on your server's Clients page, "
+                       f"then set [server] url and key in {DEFAULT_CONFIG} (or pass --server and GOLDMINE_KEY).")
+    in_url = override and "@" in override.split("//", 1)[-1].split("/", 1)[0]  # old-style --server gm_KEY@host
+    return remote.Remote(url, os.environ.get("GOLDMINE_KEY") or (None if in_url else srv.get("key")))
 
 
 def wow_dirs(args) -> list[str]:
@@ -459,7 +476,8 @@ def release_app_cmd(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--server", help="server connection URL with client key (overrides [server] url in the config)")
+    ap.add_argument("--server", help="server address, e.g. https://gold.example.com (overrides [server] url; "
+                                     "set the API key with GOLDMINE_KEY)")
     ap.add_argument("--config", default=DEFAULT_CONFIG, help=f"config file (default {DEFAULT_CONFIG})")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

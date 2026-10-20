@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, ledger, market, marketdata, mcp_server, releases, services, settings, tasks
+from . import auth, db, ledger, market, marketdata, mcp_server, oauth, releases, services, settings, tasks
 from .auth import User
 from .collector import collector, load_config
 
@@ -74,8 +74,9 @@ templates.env.filters["bytes"] = lambda n: f"{(n or 0) / 1e6:,.1f} MB" if (n or 
 @app.middleware("http")
 async def same_origin_posts(request: Request, call_next):
     """Cookie-authenticated POSTs must come from our own pages (SameSite=Lax already blocks most
-    cross-site requests; this closes the rest). The client API uses Bearer keys instead."""
-    if request.method == "POST" and not request.url.path.startswith("/api/"):
+    cross-site requests; this closes the rest). The client API uses Bearer keys instead, and the
+    OAuth token endpoints are called server to server with client credentials."""
+    if request.method == "POST" and not request.url.path.startswith(("/api/", "/oauth/token", "/oauth/revoke")):
         origin = request.headers.get("origin")
         if origin and origin.rstrip("/") != auth.origin_for(request):
             return PlainTextResponse("cross-origin request refused", status_code=403)
@@ -121,8 +122,14 @@ def login_page(request: Request):
     if auth.user_count() == 0:
         return RedirectResponse("/setup", status_code=303)
     if signed_in(request):
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(after_login(request), status_code=303)
     return page(request, "login.html", None)
+
+
+def after_login(request: Request) -> str:
+    """Where to go after signing in: back to an OAuth approval that sent us here, else home."""
+    nxt = request.session.pop("next", None) or "/"
+    return nxt if nxt.startswith("/") and not nxt.startswith("//") else "/"
 
 
 @app.post("/auth/register/options")
@@ -144,8 +151,9 @@ def login_options(request: Request):
 
 @app.post("/auth/login/verify")
 def login_verify(request: Request, body: dict = Body(...)):
+    nxt = after_login(request)  # read before sign-in resets the session
     auth.finish_authentication(request, body.get("credential") or {})
-    return {"ok": True, "redirect": "/"}
+    return {"ok": True, "redirect": nxt}
 
 
 @app.post("/logout")
@@ -312,16 +320,36 @@ def my_keys(user: User):
                             (user.id,)).fetchall()
 
 
+def clients_context(request: Request, user: User, **new) -> dict:
+    origin = auth.origin_for(request)
+    return {"keys": my_keys(user), "oauth_clients": oauth.list_clients(user), "server_url": origin,
+            "mcp_url": origin + oauth.MCP_PATH, "default_redirects": oauth.DEFAULT_REDIRECTS,
+            "downloads": releases.manifest(), "new_key": None, "new_client": None, **new}
+
+
 @app.get("/clients", response_class=HTMLResponse)
 def clients_page(request: Request, user: User = Depends(auth.require_user)):
-    return page(request, "clients.html", user, keys=my_keys(user), new_url=None, downloads=releases.manifest())
+    return page(request, "clients.html", user, **clients_context(request, user))
 
 
 @app.post("/clients", response_class=HTMLResponse)
 def clients_create(request: Request, name: str = Form("Desktop app"), user: User = Depends(auth.require_user)):
     key = auth.create_client_key(user, name)
-    return page(request, "clients.html", user, keys=my_keys(user), new_url=auth.connection_url(request, key),
-                downloads=releases.manifest())
+    return page(request, "clients.html", user, **clients_context(request, user, new_key=key))
+
+
+@app.post("/clients/oauth", response_class=HTMLResponse)
+def oauth_client_create(request: Request, name: str = Form("Claude"), redirects: str = Form(""),
+                        user: User = Depends(auth.require_user)):
+    client_id, secret = oauth.create_client(user, name, redirects)
+    return page(request, "clients.html", user,
+                **clients_context(request, user, new_client={"id": client_id, "secret": secret}))
+
+
+@app.post("/clients/oauth/{client_id}/revoke")
+def oauth_client_revoke(request: Request, client_id: str, user: User = Depends(auth.require_user)):
+    oauth.revoke_client(user, client_id)
+    return RedirectResponse("/clients", status_code=303)
 
 
 @app.get("/download/app/{platform}")
@@ -395,7 +423,7 @@ def passkey_remove(request: Request, cred: str = Form(...), user: User = Depends
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException):
     if request.url.path.startswith(("/api/", "/auth/", "/web/")) or "application/json" in request.headers.get("accept", ""):
-        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code, headers=exc.headers)
     if exc.status_code == 401:
         return to_signin(request)
     return templates.TemplateResponse(request, "error.html", {"user": signed_in(request), "error": exc.detail},
@@ -492,6 +520,7 @@ async def api_release_app(request: Request, platform: str = "macos", notes: str 
 # Read-only market data (/api/v1/market/*) and the same as MCP tools (/api/v1/mcp).
 app.include_router(marketdata.router)
 app.include_router(mcp_server.router)
+app.include_router(oauth.router)  # sign-in for MCP connectors
 mcp_server.SERVER_INFO["version"] = VERSION
 
 
