@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 NAME = "Goldmine"
-GENERATED = {"Data.lua"}  # written per user by the client; never shipped
+GENERATED = {"Data.lua", "Tasks.lua"}  # written per user by the client; never shipped
 _ZIP_TIME = (2020, 1, 1, 0, 0, 0)  # fixed timestamps so the same files always zip to the same bytes
 
 

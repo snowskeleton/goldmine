@@ -632,7 +632,7 @@ SlashCmdList.GOLDMINE = function(msg)
         local oldest = db.log[1] and date("%Y-%m-%d", db.log[1].t) or "n/a"
         Print(("%d entries stored (oldest %s). Balance: %s"):format(#db.log, oldest, FormatMoney(GetMoney())))
     else
-        Print("/goldmine [session] | recent [n] | stats | debug | prune <days> | crafts | deals")
+        Print("/goldmine [session] | recent [n] | stats | debug | prune <days> | crafts | deals | tasks")
     end
 end
 

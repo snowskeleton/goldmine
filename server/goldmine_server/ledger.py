@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 import os
 
-from . import market, pricing, svparse
+from . import market, pricing, svparse, tasks
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS characters (
@@ -129,6 +129,7 @@ def connect(db_path: str) -> sqlite3.Connection:
             if existing and name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
     conn.executescript(SCHEMA)
+    conn.executescript(tasks.SCHEMA)
     return conn
 
 
@@ -190,6 +191,7 @@ def import_data(conn: sqlite3.Connection, data: dict, source: str) -> tuple[int,
              e.get("map"), e.get("s"), item_id, item_name, json.dumps(meta, ensure_ascii=False) if meta else None),
         )
     import_market_data(conn, data, chars)
+    tasks.import_results(conn, data)
     conn.commit()
     return conn.execute(count).fetchone()[0] - before, len(log)
 

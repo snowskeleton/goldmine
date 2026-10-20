@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, marketdata as md
+from . import auth, db, marketdata as md, tasks
 from .auth import User
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -41,12 +41,45 @@ _hours = {"type": "integer", "minimum": 1, "maximum": 720, "default": 72,
           "description": "Window for market value and sold/day, in hours"}
 
 
-def _tool(name, title, description, properties, required, fn, user_db=False):
+def _tool(name, title, description, properties, required, fn, user_db=False, read_only=True):
     return {"name": name, "title": title, "description": description, "fn": fn, "user_db": user_db,
             "inputSchema": {"type": "object", "properties": properties, "required": required,
                             "additionalProperties": False},
-            "annotations": {"readOnlyHint": True, "openWorldHint": False}}
+            "annotations": {"readOnlyHint": read_only, "openWorldHint": False}}
 
+
+# Task queue (tasks.py): plans the human works through in the addon's queue, and what happened.
+_plan_id = {"type": "string", "description": "Plan id"}
+_task = {"type": "object", "required": ["id", "kind", "est_min"], "properties": {
+    "id": {"type": "string"}, "kind": {"type": "string", "enum": list(tasks.KINDS)},
+    "est_min": {"type": "number", "minimum": 0}, "ev": {"type": "integer"}, "why": {"type": "string"},
+    "after": {"type": "string"}}}
+TASK_TOOLS = [
+    _tool("publish_plan", "Publish plan",
+          "Validate and store a plan of in-game tasks, making it the active plan the addon's queue shows "
+          "after the next push and /reload (older plans stay for history). Format: docs/trader.md \"Plans and "
+          "tasks\": {plan: id, expires: unix s (future), budget_min, paper?: bool, created?, tasks: [{id, kind, "
+          "est_min, why?, ev? (copper), after? (earlier id), ...}]}. Kinds and required fields: buy item qty "
+          "max_unit; post item qty floor ceil [undercut=1 duration=24]; cancel item below|above; craft recipe "
+          "qty; scan item; mail item qty to; vendor item [qty]. Prices are copper per unit (ints). Total est_min "
+          "must fit budget_min. Returns the stored plan id, or the reasons it was rejected.",
+          {"plan": {"type": "object", "required": ["plan", "expires", "budget_min", "tasks"], "properties": {
+              "plan": {"type": "string"}, "created": {"type": "integer"}, "expires": {"type": "integer"},
+              "paper": {"type": "boolean"}, "budget_min": {"type": "number", "exclusiveMinimum": 0},
+              "tasks": {"type": "array", "items": _task, "minItems": 1, "maxItems": tasks.MAX_TASKS}}}},
+          ["plan"], lambda conn, plan: tasks.publish(conn, plan), user_db=True, read_only=False),
+    _tool("get_plan", "Get plan",
+          "The active plan (or the one with this id), each task with its latest result from the addon "
+          "(status done/partial/skipped/blocked/below_floor/expired, qty, seen = live unit price, paid, reason).",
+          {"plan": _plan_id}, [], lambda conn, plan=None: tasks.get_plan(conn, plan), user_db=True),
+    _tool("get_task_results", "Task results",
+          "What happened to tasks in game, newest first: status, qty, seen (live unit price the human saw, "
+          "copper), paid, reason (why a task was skipped). Results arrive with the client's next upload.",
+          {"plan": _plan_id, "since": {"type": "integer", "description": "Unix seconds"},
+           "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+           "offset": {"type": "integer", "minimum": 0, "default": 0}},
+          [], lambda conn, **kw: tasks.get_results(conn, **kw), user_db=True),
+]
 
 TOOLS = [
     _tool("list_markets", "List markets",
@@ -97,6 +130,7 @@ TOOLS = [
           "revenue at min(market value, lowest listing) after the AH cut, and sold/day.",
           {"hours": _hours, "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 40}},
           [], lambda conn, **kw: md.crafts(conn, **kw), user_db=True),
+    *TASK_TOOLS,
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}
 
@@ -109,11 +143,16 @@ def _call_tool(user: User, name: str, arguments: dict) -> dict:
     unknown = set(arguments) - set(allowed)
     if unknown:
         return _error_result(f"unknown arguments: {', '.join(sorted(unknown))}")
-    conn = md.ro_conn(user.id if tool["user_db"] else None)
+    if tool["annotations"]["readOnlyHint"]:
+        conn = md.ro_conn(user.id if tool["user_db"] else None)
+    else:
+        conn = db.user_conn(user.id)  # write tools: the user's game DB, writable
     try:
         result = tool["fn"](conn, **arguments)
     except HTTPException as exc:
         return _error_result(str(exc.detail))
+    except tasks.PlanRejected as exc:
+        return _error_result(str(exc))
     except (TypeError, ValueError) as exc:
         return _error_result(f"bad arguments: {exc}")
     finally:

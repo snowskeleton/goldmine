@@ -8,7 +8,7 @@ Goldmine app) up to date. Goldmine.app runs it for all of that; it works on its 
   goldmine.py server-check              # test the connection
   goldmine.py sync                      # upload every Goldmine.lua found under the WoW folder
   goldmine.py watch --push              # upload whenever WoW saves (logout, /reload), then refresh prices
-  goldmine.py push                      # download prices/crafts/deals into the addon (Data.lua)
+  goldmine.py push                      # download prices/crafts/deals and the task queue into the addon
   goldmine.py summary --days 7          # income/expense by source
   goldmine.py crafts | deals            # profit per craft; items listed well below market value
   goldmine.py price "Linen Cloth"       # recent prices for an item
@@ -223,7 +223,8 @@ def watch_cmd(args) -> int:
 
 
 def push_cmd(args) -> int:
-    """Download Data.lua (prices, crafts, deals for your realms) into every installed copy of the addon."""
+    """Download Data.lua (prices, crafts, deals for your realms) and Tasks.lua (the trader's active plan)
+    into every installed copy of the addon."""
     rem = server(args)
     if args.addon_data:
         targets = [Path(args.addon_data)]
@@ -238,9 +239,17 @@ def push_cmd(args) -> int:
     except remote.RemoteError as exc:
         print(f"addon data: FAILED: {exc}", file=sys.stderr)
         return 1
+    try:
+        tasks = rem.request("GET", "/api/v1/addon-tasks")
+    except remote.RemoteError as exc:  # e.g. a server from before the task queue: prices still work
+        print(f"addon tasks: skipped: {exc}", file=sys.stderr)
+        tasks = None
     for t in targets:
         t.write_bytes(data)
         print(f"wrote {t} ({len(data) / 1024:.0f} KB from {rem.base}). /reload in game to load it.")
+        if tasks is not None:
+            t.with_name("Tasks.lua").write_bytes(tasks)
+            print(f"wrote {t.with_name('Tasks.lua')} (trader task queue)")
     return 0
 
 
@@ -488,7 +497,7 @@ def main(argv=None) -> int:
     p.add_argument("--exit-with-parent", action="store_true", help="stop when the launching process exits")
     p.set_defaults(fn=watch_cmd)
 
-    p = sub.add_parser("push", help="download prices, crafts and deals into the addon's Data.lua")
+    p = sub.add_parser("push", help="download prices, crafts and deals (Data.lua) and the trader's task queue (Tasks.lua) into the addon")
     add_wow(p)
     p.add_argument("--addon-data", help="where to write Data.lua (default: every installed copy of the addon)")
     p.set_defaults(fn=push_cmd)

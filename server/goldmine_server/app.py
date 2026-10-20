@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, ledger, market, marketdata, mcp_server, releases, services, settings
+from . import auth, db, ledger, market, marketdata, mcp_server, releases, services, settings, tasks
 from .auth import User
 from .collector import collector, load_config
 
@@ -420,6 +420,16 @@ async def api_game_data(request: Request, source: str = "upload", user: User = D
 @app.get("/api/v1/addon-data")
 def api_addon_data(user: User = Depends(auth.client_user)):
     return Response(services.addon_data(user.id), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/v1/addon-tasks")
+def api_addon_tasks(user: User = Depends(auth.client_user)):
+    """Tasks.lua: the active trader plan for the addon's queue (an empty plan when there is none)."""
+    conn = db.user_conn(user.id)
+    try:
+        return Response(tasks.addon_tasks(conn), media_type="text/plain; charset=utf-8")
+    finally:
+        conn.close()
 
 
 @app.get("/api/v1/status")

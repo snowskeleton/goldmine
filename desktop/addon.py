@@ -22,7 +22,7 @@ import zipfile
 from pathlib import Path
 
 NAME = "Goldmine"
-GENERATED = {"Data.lua"}  # written by push, per machine; never shipped
+GENERATED = {"Data.lua", "Tasks.lua"}  # written by push, per machine; never shipped
 
 
 class AddonError(RuntimeError):

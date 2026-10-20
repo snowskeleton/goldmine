@@ -10,6 +10,8 @@ addon/Goldmine/
   Market.lua      records AH prices you browse, your recipes, bags/bank/warband contents
   Advice.lua      price tooltips, /goldmine crafts, /goldmine deals (from Data.lua)
   Data.lua        downloaded from the server by `goldmine.py push` (not in git; the addon works without it)
+  TaskQueue.lua   the trader's task queue window, /goldmine tasks (from Tasks.lua)
+  Tasks.lua       the active trader plan, downloaded by `goldmine.py push` (not in git; optional like Data.lua)
 server/           Goldmine server (Docker): does all the work and stores everything
   goldmine_server/
     app.py        web UI (passkey sign-in) + client API
@@ -20,6 +22,7 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
     marketdata.py read-only market data as JSON (/api/v1/market/*)
     mcp_server.py the same as MCP tools for assistants (/api/v1/mcp)
+    tasks.py      trader plans (validation, active plan, Tasks.lua) and task results
     svparse.py    SavedVariables (Lua table) parser
     releases.py   addon + app updates for clients
     cli.py        admin commands that use the server's API keys (probe, realms)
@@ -96,6 +99,7 @@ client (`/dump select(4, GetBuildInfo())` in game).
 | `/goldmine stats` | number of stored entries, oldest entry |
 | `/goldmine debug` | print every money change as it happens (good for checking labels) |
 | `/goldmine prune <days>` | drop old entries from SavedVariables. **Sync first.** |
+| `/goldmine tasks` | show/hide the trader's task queue (opens by itself at the AH, mailbox, a merchant or a profession window when it has tasks there) |
 
 ## Client
 
@@ -233,6 +237,24 @@ The tests run against a mock, so these need checking in the real client
 - Whether `GetRepairAllCost()` still returns the cost immediately after `RepairAllItems()`.
   If not, repairs are still labeled correctly, just matched by sign instead of amount.
 
+Task queue (retail), untested against a live client:
+
+- `SendSearchQuery(MakeItemKey(id))` returns results for gear and other non-commodity items (the
+  Blizzard UI browses first to get an item key with item level).
+- `COMMODITY_PRICE_UPDATED` arrives after `StartCommoditiesPurchase`, and Confirm still works
+  if you wait a while before clicking it. `COMMODITY_PURCHASE_SUCCEEDED/FAILED` arrive after Confirm.
+- Item buyouts (`PlaceBid`), posts and cancels are counted when you click. An
+  `AUCTION_HOUSE_SHOW_ERROR` within 5 s undoes the count. Is that the only failure signal?
+- Retail AH prices are whole silver (posts are rounded down to it). `PostCommodity` takes a
+  quantity across several stacks, and `PostItem(loc, duration, 1, nil, buyout)` posts one.
+- Owned auctions' `buyoutAmount` is taken as the price per unit.
+- `C_TradeSkillUI.OpenRecipe` works with the profession window closed.
+  `ProfessionsFrame.CraftingPage.CreateMultipleInputBox:SetValue` fills in the count, and
+  `TRADE_SKILL_ITEM_CRAFTED_RESULT` fires once per craft with `recipeID` or `itemID`.
+- `C_Container.UseContainerItem` attaches a stack with the Send Mail tab open and sells it at a merchant.
+  An attached stack shows as `isLocked` in the bag.
+- None of these calls is blocked as protected when it's made from the queue's own buttons.
+
 ## Server
 
 `server/` does all the work, so your Mac doesn't have to be on: it collects prices, stores
@@ -295,6 +317,37 @@ claude mcp add --transport http --scope user goldmine https://gold.example.com/a
 `claude mcp get goldmine` should say "Connected". `--scope user` makes it available in every
 project; leave it out to register it for the current folder only. Keep the key out of shared
 `.mcp.json` files.
+
+### Trader task queue
+
+An assistant (the "trader", see `docs/trader.md`) plans AH work and you do every action by
+hand. The flow:
+
+1. The trader calls the MCP tool `publish_plan`. The server checks the plan's shape (task kinds
+   `buy post cancel craft scan mail vendor`, required fields, prices as copper ints, `expires` in
+   the future, total `est_min` ≤ `budget_min`) and stores it as the active plan. Older plans are
+   kept for history. Portfolio risk checks go in `tasks.validate_risk`, which accepts everything for now.
+2. `goldmine.py push` (the app does this after every sync) writes `Tasks.lua` next to `Data.lua`
+   in every installed copy of the addon (`GET /api/v1/addon-tasks`; when no plan is active it writes an empty plan). `/reload` loads it.
+3. In game, `/goldmine tasks` (or opening the AH, mailbox, a merchant or a profession) shows the
+   queue: tasks in order with time estimates and expected profit. Every price is checked live
+   before its button turns on:
+   - **buy**: Search → Get quote → Confirm. Confirm only turns on when the quote is
+     ≤ quantity × `max_unit`. For item auctions, only listings at or under `max_unit` can be bought. Partial fills are fine.
+   - **post**: the price is the lowest listing that isn't yours, minus `undercut`, clamped to
+     `floor`..`ceil` and rounded to whole silver. If that listing is below `floor`, it doesn't post and records `below_floor`.
+   - **cancel**: lists your auctions priced below/above the limit, cheapest first; one cancel per click.
+   - **craft**: opens the recipe and fills in the count; you press Create.
+   - **scan**: one search, so the server gets a live price. **mail**: attaches one stack per
+     click and fills in the recipient; you press Send. **vendor**: sells one stack per click.
+
+   One click is one protected action. The addon never chains AH, craft or mail calls and never
+   acts on its own. Paper plans (`paper = true`) show up but their buttons stay off. Expired plans
+   are ignored. **Skip…** asks why (too expensive, no time, out of bag space, don't trust it,
+   other, plus a note).
+4. Each outcome (`done partial skipped blocked below_floor expired`, with the live price seen and
+   gold paid) goes to `GoldmineDB.taskResults`. The next sync uploads it and the server imports it by id.
+   The trader reads it with `get_task_results` and `get_plan`, the same plan with each task's result.
 
 Local test run without Docker:
 

@@ -1,5 +1,6 @@
 # Build output and local environments
 addon/Goldmine/Data.lua
+addon/Goldmine/Tasks.lua
 app/build/
 __pycache__/
 *.pyc

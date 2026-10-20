@@ -7,6 +7,8 @@
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 
 Data.lua
+Tasks.lua
 Goldmine.lua
 Market.lua
 Advice.lua
+TaskQueue.lua
