@@ -32,7 +32,7 @@ addon/tests/      offline test harness with a mocked WoW API (runs on lua and lu
 ```
 
 The client does nothing without a server: it has no Blizzard API access and no local database.
-Its config is `~/.goldmine/config.toml`, which holds just the server connection URL and a few
+Its config is `~/.goldmine/config.toml`, which holds just the server address, your API key, and a few
 app toggles.
 
 ## How it works
@@ -101,7 +101,7 @@ client (`/dump select(4, GetBuildInfo())` in game).
 
 ```bash
 cd /Users/snow/bin/goldmine/desktop
-python3 goldmine.py server-check                 # after setting [server] url (or pass --server URL)
+python3 goldmine.py server-check                 # after setting [server] url and key
 python3 goldmine.py sync --push                  # upload every Goldmine.lua, then download prices
 python3 goldmine.py watch --push                 # keep doing that whenever WoW writes the file
 python3 goldmine.py summary --days 7
@@ -109,8 +109,17 @@ python3 goldmine.py export gold.csv --since 30d --char Snow
 python3 goldmine.py export - --source auction_sale    # CSV to stdout
 ```
 
-- Get a connection URL (`https://gm_…@gold.example.com`) from the server's **Clients** page and
-  put it in `~/.goldmine/config.toml` as `[server] url = "…"`, or pass `--server`.
+- Generate an API key on the server's **Clients** page and put it in `~/.goldmine/config.toml`:
+
+  ```toml
+  [server]
+  url = "https://gold.example.com"
+  key = "gm_…"
+  ```
+
+  `--server URL` and the `GOLDMINE_KEY` environment variable override them (the key stays off the
+  command line, where other users could see it in `ps`). Old configs with the key inside the URL
+  (`https://gm_…@host`) still work; the app splits them into `url` and `key` when it next saves.
 - The WoW folder defaults to standard install locations (override with `--wow-dir` or
   `GOLDMINE_WOW_DIR`). Any flavor folder (`_retail_`, `_forever_`, …) is searched.
 - Reports run on the server; `timing` shows hours in your local time.
@@ -250,9 +259,10 @@ docker compose -f server/docker-compose.yml up -d --build      # from the reposi
   (each user's ledger, scans, recipes, inventory).
 - **Accounts:** the first visitor creates the admin account with a passkey, so sign up right after
   deploying. Later users need an invite link (Users page, single use, 7 days).
-- **Clients:** the Clients page generates a connection URL like `https://gm_…@gold.example.com`.
-  Paste it into the Mac app (Settings → Goldmine server). The key is sent as a Bearer token,
-  never in the URL path, and only its hash is stored; revoke it any time.
+- **Clients:** the Clients page generates API keys (`gm_…`) for the Mac app and CLI: paste the
+  server address and the key into the app (Settings → Goldmine server). The key is sent as a
+  Bearer token, never in the URL, and only its hash is stored; revoke it any time. The same page
+  makes OAuth client IDs and secrets for MCP connectors (below).
 - **Releases:** the image ships the addon, and connected apps install/update it from there. Mac
   app builds are uploaded by an admin with `app/build.sh --release` (or `goldmine.py release-app
   Goldmine.app`) and kept in `/data/releases`; the Clients page has download links for both. The
@@ -265,8 +275,8 @@ docker compose -f server/docker-compose.yml up -d --build      # from the reposi
 
 Read-only access to the collected AH data, so an assistant (or a script) can pull live and
 historical prices straight from the server. It opens `market.sqlite` read-only, so it can't
-change anything. Authenticate with a client key from the **Clients** page (`gm_…`, the part
-before `@` in the connection URL) as `Authorization: Bearer gm_…`. Prices are copper per unit;
+change anything. Authenticate with an API key from the **Clients** page as
+`Authorization: Bearer gm_…` (or an OAuth access token, see below). Prices are copper per unit;
 times are unix seconds with an ISO 8601 UTC copy (`*_iso`). Lists are capped and paginated
 (`limit`/`offset`, follow `next_offset` until it's `null`).
 
@@ -285,8 +295,23 @@ the market's latest snapshot.
 
 The same queries are MCP tools (`list_markets`, `search_items`, `get_current_prices`,
 `get_price_history`, `get_market_values`, `get_deals`, `get_crafts`) on a streamable-HTTP MCP
-endpoint at `/api/v1/mcp`. To use it from Claude Code (create a dedicated key on the Clients
-page, e.g. "Claude", so you can revoke it separately):
+endpoint at `/api/v1/mcp`.
+
+**Claude (claude.ai, Claude Desktop, mobile) via Connectors.** Connectors sign in with OAuth:
+
+1. On the Clients page, under **Connectors (MCP)**, generate a client ID and secret.
+2. In Claude: Settings → Connectors → Add custom connector. URL `https://gold.example.com/api/v1/mcp`;
+   under Advanced settings paste the client ID and secret.
+3. Connect: Claude sends you to your server, you sign in with your passkey and press Allow.
+
+The server has to be reachable from the internet over https, with `GOLDMINE_ORIGIN` set to its public
+URL (the OAuth metadata is built from it). Connector tokens are read-only: they reach the market data
+and MCP tools and nothing else (no uploads, ledger or exports). Access tokens last an hour and refresh
+for 30 days; revoking the connector on the Clients page cuts it off immediately. There's no dynamic
+client registration, so only connectors you create can ask you to sign in.
+
+**Claude Code.** Use an API key as a header (create a dedicated one, e.g. "Claude Code", so you
+can revoke it separately):
 
 ```bash
 claude mcp add --transport http --scope user goldmine https://gold.example.com/api/v1/mcp --header "Authorization: Bearer gm_…"

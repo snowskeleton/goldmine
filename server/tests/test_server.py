@@ -174,9 +174,8 @@ class ServerFlow(unittest.TestCase):
 
     def test_08_client_key_and_api(self):
         page = self.admin.post("/clients", data={"name": "MacBook"}).text
-        url = re.search(r'value="(http://gm_[^"]+)"', page).group(1)
-        key = url.split("://", 1)[1].split("@", 1)[0]
-        self.assertTrue(url.endswith("@testserver"))
+        key = re.search(r'id="newkey" value="(gm_[^"]+)"', page).group(1)
+        self.assertIn('id="srvurl" value="http://testserver"', page)  # address and key shown separately
         type(self).key = key
         api = TestClient(app)
         self.assertEqual(api.get("/api/v1/me").status_code, 401)

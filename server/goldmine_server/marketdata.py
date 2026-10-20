@@ -340,40 +340,40 @@ def _run(fn, *args, user_id: int | None = None, **kw):
 
 
 @router.get("/markets")
-def api_markets(user: User = Depends(auth.client_user)):
+def api_markets(user: User = Depends(auth.market_user)):
     return _run(list_markets)
 
 
 @router.get("/items")
-def api_items(q: str, limit: int | None = None, offset: int = 0, user: User = Depends(auth.client_user)):
+def api_items(q: str, limit: int | None = None, offset: int = 0, user: User = Depends(auth.market_user)):
     return _run(search_items, q, limit=limit, offset=offset)
 
 
 @router.get("/current")
-def api_current(market: str, item: list[str] = Query(...), user: User = Depends(auth.client_user)):
+def api_current(market: str, item: list[str] = Query(...), user: User = Depends(auth.market_user)):
     return _run(current_prices, market, item)
 
 
 @router.get("/history")
 def api_history(market: str, item: str, variant: int = 0, since: int | None = None, until: int | None = None,
                 resolution: str = "hourly", limit: int | None = None, offset: int = 0,
-                user: User = Depends(auth.client_user)):
+                user: User = Depends(auth.market_user)):
     return _run(price_history, market, item, variant=variant, since=since, until=until, resolution=resolution,
                 limit=limit, offset=offset)
 
 
 @router.get("/values")
 def api_values(market: str, item: list[str] | None = Query(None), hours: int = 72, min_sold: float = 0.0,
-               limit: int | None = None, offset: int = 0, user: User = Depends(auth.client_user)):
+               limit: int | None = None, offset: int = 0, user: User = Depends(auth.market_user)):
     return _run(market_values, market, item, hours=hours, min_sold=min_sold, limit=limit, offset=offset)
 
 
 @router.get("/deals")
 def api_deals(market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: float = 1.0, limit: int | None = None,
-              user: User = Depends(auth.client_user)):
+              user: User = Depends(auth.market_user)):
     return _run(deals, market, hours=hours, max_ratio=max_ratio, min_sold=min_sold, limit=limit)
 
 
 @router.get("/crafts")
-def api_crafts(hours: int = 72, limit: int | None = None, user: User = Depends(auth.client_user)):
+def api_crafts(hours: int = 72, limit: int | None = None, user: User = Depends(auth.market_user)):
     return _run(crafts, hours=hours, limit=limit, user_id=user.id)

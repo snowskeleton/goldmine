@@ -92,7 +92,7 @@ class StubServer:
                 self.send(200, {"new": 3, "total": 5})
 
         self.httpd = HTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://{KEY}@127.0.0.1:{self.httpd.server_port}"
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def close(self):
@@ -119,10 +119,15 @@ class ClientTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def cli(self, *args, server=True) -> tuple[int, str, str]:
+    def cli(self, *args, server=True, key=KEY) -> tuple[int, str, str]:
+        import unittest.mock as mock
         out, err = io.StringIO(), io.StringIO()
         pre = ["--config", self.config] + (["--server", self.server.url] if server else [])
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        env = {"GOLDMINE_KEY": key} if server and key else {}
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, env) as e:
+            if not env:
+                e.pop("GOLDMINE_KEY", None)
             code = goldmine.main([*pre, *args])
         return code, out.getvalue(), err.getvalue()
 
@@ -147,9 +152,11 @@ class ClientTests(unittest.TestCase):
             self.assertIn("no Goldmine server configured", err)
 
     def test_bad_key_is_reported(self):
-        code, _, err = self.cli("--server", self.server.url.replace(KEY, "gm_wrong"), "server-check", server=False)
+        code, _, err = self.cli("server-check", key="gm_wrong")
         self.assertEqual(code, 1)
         self.assertIn("401", err)
+        code, _, err = self.cli("server-check", key="https://gold.example.com/invite/x")
+        self.assertIn("isn't a Goldmine API key", err)
 
     def test_install_needs_a_flavor_when_ambiguous(self):
         code, _, err = self.cli("addon", "install", *self.wow_args())
@@ -216,7 +223,7 @@ class ClientTests(unittest.TestCase):
 
     def test_config_keeps_tables_it_doesnt_use(self):
         import unittest.mock as mock
-        cfg = {"server": {"url": self.server.url}, "app": {"auto_sync": True},
+        cfg = {"server": {"url": self.server.url, "key": KEY}, "app": {"auto_sync": True},
                "api": {"client_id": "abc"}, "market": [{"name": "m1", "kind": "commodities"}]}
         with mock.patch("sys.stdin", io.StringIO(json.dumps(cfg))):
             self.assertEqual(self.cli("config", "set", server=False)[0], 0)
@@ -225,7 +232,29 @@ class ClientTests(unittest.TestCase):
         with mock.patch("sys.stdin", io.StringIO(json.dumps({"server": {"url": "https://gold.example.com/invite/x"}}))):
             code, _, err = self.cli("config", "set", server=False)
         self.assertEqual(code, 1)
-        self.assertIn("no client key", err)
+        self.assertIn("no API key", err)
+
+    def test_config_url_and_key(self):
+        Path(self.config).write_text(f'[server]\nurl = "{self.server.url}"\nkey = "{KEY}"\n')
+        code, out, err = self.cli("server-check", "--json", server=False)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["server"], self.server.url)
+
+    def test_old_style_url_still_works_and_is_split(self):
+        import unittest.mock as mock
+        legacy = self.server.url.replace("://", f"://{KEY}@")
+        Path(self.config).write_text(f'[server]\nurl = "{legacy}"\n')
+        code, out, err = self.cli("server-check", "--json", server=False)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["server"], self.server.url)  # never echoes the key
+        got = json.loads(self.cli("config", "get", server=False)[1])
+        self.assertEqual(got["server"], {"url": self.server.url, "key": KEY})
+        with mock.patch("sys.stdin", io.StringIO(json.dumps({"server": {"url": legacy}}))):
+            self.assertEqual(self.cli("config", "set", server=False)[0], 0)
+        text = Path(self.config).read_text()
+        self.assertIn(f'url = "{self.server.url}"', text)
+        self.assertIn(f'key = "{KEY}"', text)
+        self.assertEqual(self.cli("--server", legacy, "server-check", server=False)[0], 0)
 
     def test_rejects_unsafe_zip(self):
         buf = io.BytesIO()

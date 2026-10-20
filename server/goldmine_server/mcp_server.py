@@ -4,7 +4,8 @@ so an assistant like Claude Code can query this server directly.
 Streamable HTTP transport, stateless: each JSON-RPC message is POSTed to /api/v1/mcp and answered
 with a single application/json response (the spec allows JSON instead of an SSE stream). There
 are no server-initiated messages, so GET (the optional SSE channel) returns 405. Authenticated
-with a client key as a Bearer token, like the rest of /api/v1:
+with an API key as a Bearer token, or with an OAuth access token (oauth.py), which is what
+Claude's Connectors use: a 401 here points them at the OAuth metadata.
 
     claude mcp add --transport http goldmine https://gold.example.com/api/v1/mcp \
         --header "Authorization: Bearer gm_..."
@@ -165,7 +166,7 @@ router = APIRouter()
 
 
 @router.post("/api/v1/mcp")
-async def mcp_post(request: Request, user: User = Depends(auth.client_user)):
+async def mcp_post(request: Request, user: User = Depends(auth.market_user)):
     try:
         body = json.loads(await request.body())
     except ValueError:
@@ -178,10 +179,10 @@ async def mcp_post(request: Request, user: User = Depends(auth.client_user)):
 
 
 @router.get("/api/v1/mcp")
-def mcp_get(user: User = Depends(auth.client_user)):
+def mcp_get(user: User = Depends(auth.market_user)):
     return Response(status_code=405, headers={"Allow": "POST"})
 
 
 @router.delete("/api/v1/mcp")
-def mcp_delete(user: User = Depends(auth.client_user)):
+def mcp_delete(user: User = Depends(auth.market_user)):
     return Response(status_code=405, headers={"Allow": "POST"})

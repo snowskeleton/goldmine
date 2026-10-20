@@ -6,9 +6,10 @@ Accounts:
   * After that, new accounts need an invite link from an admin.
   * Users can add more passkeys to their account from the Account page.
 
-Client keys authenticate the desktop app. A key is shown once, inside a connection URL like
-https://gm_xxx@gold.example.com: the app sends it as a Bearer token, so it never appears in
-request lines or proxy logs. Only its SHA-256 hash is stored.
+API keys (gm_...) authenticate the desktop app: shown once on the Clients page, next to the
+server's address, and sent as a Bearer token, so they never appear in request lines or proxy logs.
+Only their SHA-256 hash is stored. MCP connectors use OAuth instead (oauth.py); their access
+tokens only reach the read-only market data (market_user).
 """
 
 from __future__ import annotations
@@ -244,22 +245,52 @@ def create_client_key(user: User, name: str) -> str:
     return key
 
 
-def connection_url(request: Request, key: str) -> str:
-    parts = urlsplit(origin_for(request))
-    return f"{parts.scheme}://{key}@{parts.netloc}"
+def _bearer(request: Request) -> str | None:
+    header = request.headers.get("authorization", "")
+    return header[7:].strip() if header.lower().startswith("bearer ") else None
+
+
+def _key_user(conn, request: Request, key_hash: str) -> User | None:
+    row = conn.execute("SELECT u.id AS uid, u.name, u.is_admin FROM client_keys k JOIN users u ON u.id = k.user_id "
+                       "WHERE k.key_hash = ? AND k.revoked IS NULL", (key_hash,)).fetchone()
+    if not row:
+        return None
+    conn.execute("UPDATE client_keys SET last_used = ?, last_ip = ? WHERE key_hash = ?",
+                 (db.now(), request.client.host if request.client else None, key_hash))
+    return User(row["uid"], row["name"], bool(row["is_admin"]))
 
 
 def client_user(request: Request) -> User:
-    """Authenticate an API request by its Bearer client key."""
-    header = request.headers.get("authorization", "")
-    if not header.lower().startswith("bearer "):
-        raise HTTPException(401, "missing client key")
-    key_hash = db.hash_token(header[7:].strip())
+    """Authenticate an API request by its Bearer API key (full access to the client API)."""
+    token = _bearer(request)
+    if not token:
+        raise HTTPException(401, "missing API key")
     with db.server_conn() as conn:
-        row = conn.execute("SELECT u.id AS uid, u.name, u.is_admin FROM client_keys k JOIN users u ON u.id = k.user_id "
-                           "WHERE k.key_hash = ? AND k.revoked IS NULL", (key_hash,)).fetchone()
-        if not row:
-            raise HTTPException(401, "invalid or revoked client key")
-        conn.execute("UPDATE client_keys SET last_used = ?, last_ip = ? WHERE key_hash = ?",
-                     (db.now(), request.client.host if request.client else None, key_hash))
-        return User(row["uid"], row["name"], bool(row["is_admin"]))
+        user = _key_user(conn, request, db.hash_token(token))
+    if not user:
+        raise HTTPException(401, "invalid or revoked API key")
+    return user
+
+
+def market_user(request: Request) -> User:
+    """Read-only market data and MCP: an API key, or an OAuth access token (connectors). A 401
+    points OAuth clients at the protected-resource metadata, which is how they discover sign-in."""
+    token = _bearer(request)
+    user = None
+    if token:
+        token_hash = db.hash_token(token)
+        with db.server_conn() as conn:
+            user = _key_user(conn, request, token_hash)
+            if user is None:
+                row = conn.execute("""SELECT u.id, u.name, u.is_admin FROM oauth_tokens t
+                                      JOIN users u ON u.id = t.user_id
+                                      JOIN oauth_clients c ON c.client_id = t.client_id
+                                      WHERE t.token_hash = ? AND t.kind = 'access' AND t.revoked IS NULL
+                                        AND t.expires > ? AND c.revoked IS NULL""", (token_hash, db.now())).fetchone()
+                user = _user(row)
+    if user is None:
+        meta = f"{origin_for(request)}/.well-known/oauth-protected-resource{request.url.path}"
+        error = ', error="invalid_token"' if token else ""
+        raise HTTPException(401, "invalid or expired token" if token else "missing API key or access token",
+                            headers={"WWW-Authenticate": f'Bearer resource_metadata="{meta}"{error}'})
+    return user

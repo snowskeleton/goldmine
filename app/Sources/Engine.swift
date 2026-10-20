@@ -18,7 +18,8 @@ struct LogLine: Identifiable {
 
 /// Editable view of config.toml. Unknown keys in the file are preserved on save.
 struct Settings {
-    var serverURL = ""           // https://gm_KEY@host; required, the app does nothing without it
+    var serverURL = ""           // https://gold.example.com; with apiKey, required: the app does nothing without them
+    var apiKey = ""              // gm_…, from the server's Clients page
     var autoSync = true          // upload SavedVariables whenever WoW writes them
     var autoPush = true          // download prices into the addon after each upload
     var autoUpdateAddon = true   // keep installed copies of the addon current
@@ -169,10 +170,12 @@ final class Engine: ObservableObject {
         return candidates.first { !$0.isEmpty && fm.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
     }
     var busy: Bool { syncing }
-    /// True once a server URL is saved. Everything that talks to goldmine.py checks this first.
-    var serverMode: Bool { !settings.serverURL.trimmingCharacters(in: .whitespaces).isEmpty }
+    /// True once a server address and API key are saved. Everything that talks to goldmine.py checks this first.
+    var serverMode: Bool {
+        !settings.serverURL.trimmingCharacters(in: .whitespaces).isEmpty && !settings.apiKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
-    /// The server's address without the client key, for showing and opening in a browser.
+    /// The server's address, for showing and opening in a browser.
     var serverDisplayURL: URL? {
         guard serverMode, var parts = URLComponents(string: settings.serverURL.trimmingCharacters(in: .whitespaces)) else { return nil }
         parts.user = nil
@@ -180,9 +183,12 @@ final class Engine: ObservableObject {
         return parts.url
     }
 
-    /// Tests a server URL (saved or not). Returns a description of the result.
-    func checkServer(_ url: String) async -> (Bool, String) {
-        let (code, out) = await run(["--server", url, "server-check", "--json"], label: "server", quiet: true)
+    /// Tests a server address and key (saved or not). Returns a description of the result.
+    /// The key goes in the environment, not the arguments, so it doesn't show up in `ps`.
+    func checkServer(_ url: String, key: String) async -> (Bool, String) {
+        let (code, out) = await run(["--server", url.trimmingCharacters(in: .whitespacesAndNewlines), "server-check", "--json"],
+                                    label: "server", quiet: true,
+                                    env: ["GOLDMINE_KEY": key.trimmingCharacters(in: .whitespacesAndNewlines)])
         if code == 0, let data = out.data(using: .utf8), let r = try? JSONDecoder().decode(ServerCheck.self, from: data) {
             return (true, "Connected as \(r.user)\(r.admin ? " (admin)" : "") · server \(r.server_version)")
         }
@@ -216,13 +222,15 @@ final class Engine: ObservableObject {
 
     /// Runs goldmine.py with args. Output is streamed to the log unless quiet; stdout is returned.
     @discardableResult
-    func run(_ args: [String], label: String, quiet: Bool = false, stdin: Data? = nil) async -> (Int32, String) {
+    func run(_ args: [String], label: String, quiet: Bool = false, stdin: Data? = nil,
+             env extra: [String: String] = [:]) async -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
         process.arguments = ["-B", scriptPath] + args  // -B: never write __pycache__ into the signed bundle
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"  // never write __pycache__ into the signed app bundle
+        env.merge(extra) { _, new in new }
         process.environment = env
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
@@ -318,7 +326,8 @@ final class Engine: ObservableObject {
         let app = obj["app"] as? [String: Any] ?? [:]
         let server = obj["server"] as? [String: Any] ?? [:]
         var s = Settings()
-        s.serverURL = server["url"] as? String ?? ""
+        s.serverURL = server["url"] as? String ?? ""  // `config get` splits old https://gm_KEY@host URLs
+        s.apiKey = server["key"] as? String ?? ""
         s.autoSync = app["auto_sync"] as? Bool ?? true
         s.autoPush = app["auto_push"] as? Bool ?? true
         s.autoUpdateAddon = app["auto_update_addon"] as? Bool ?? true
@@ -334,8 +343,9 @@ final class Engine: ObservableObject {
         app["auto_update_addon"] = settings.autoUpdateAddon
         app["auto_update_app"] = settings.autoUpdateApp
         cfg["app"] = app
-        let url = settings.serverURL.trimmingCharacters(in: .whitespaces)
-        if url.isEmpty { cfg.removeValue(forKey: "server") } else { cfg["server"] = ["url": url] }
+        let url = settings.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if url.isEmpty && key.isEmpty { cfg.removeValue(forKey: "server") } else { cfg["server"] = ["url": url, "key": key] }
         guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.sortedKeys]) else { return false }
         let (code, _) = await run(["config", "set"], label: "config", stdin: data)
         if code == 0 {
@@ -354,10 +364,11 @@ final class Engine: ObservableObject {
         Task { await refreshStatus() }
     }
 
-    /// Saves a new server URL (after it tested OK) or clears it, and restarts background work.
-    func connect(_ url: String) async -> Bool {
+    /// Saves a new server address and key (after they tested OK) or clears them, and restarts background work.
+    func connect(_ url: String, key: String) async -> Bool {
         stopWatch()
         settings.serverURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.apiKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard await saveConfig() else { return false }
         updates = UpdateState()
         if serverMode { Task { await checkForUpdates(auto: true) } }
