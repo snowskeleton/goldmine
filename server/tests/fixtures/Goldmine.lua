@@ -1,215 +1,256 @@
 
 GoldmineDB = {
 	["version"] = 1,
-	["settings"] = {
+	["chars"] = {
+		["Snow-Testrealm"] = {
+			["seq"] = 14,
+			["faction"] = "Alliance",
+			["realm"] = "Testrealm",
+			["inventory"] = {
+				["bagsAt"] = 1760001049,
+				["bags"] = {
+					[2589] = 25,
+					[2592] = 3,
+				},
+				["bank"] = {
+					[2996] = 7,
+				},
+				["bankAt"] = 1760001049,
+			},
+			["lastSeen"] = 1760001042,
+			["professions"] = {
+				["Tailoring"] = {
+					["t"] = 1760001044,
+					["recipes"] = {
+						[100] = {
+							["n"] = "Bolt of Linen Cloth",
+							["o"] = 2996,
+							["r"] = {
+								2589, -- [1]
+								2, -- [2]
+							},
+							["q"] = 1.0,
+						},
+					},
+				},
+			},
+			["money"] = 74328,
+			["class"] = "MAGE",
+			["region"] = "US",
+			["name"] = "Snow",
+		},
 	},
 	["log"] = {
 		{
-			["id"] = "Snow-Testrealm:1",
-			["b"] = 50000,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001000,
 			["src"] = "baseline",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 50000,
+			["id"] = "Snow-Testrealm:1",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 0,
+			["t"] = 1760001000,
+			["c"] = "Snow-Testrealm",
 		}, -- [1]
 		{
-			["id"] = "Snow-Testrealm:2",
-			["b"] = 50250,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["m"] = {
-				["npc"] = "Vendorbot",
-				["item"] = "[Bag 0-3]",
-			},
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001000,
 			["src"] = "vendor",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 50250,
+			["id"] = "Snow-Testrealm:2",
+			["m"] = {
+				["item"] = "[Bag 0-3]",
+				["npc"] = "Vendorbot",
+			},
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 250,
+			["t"] = 1760001000,
+			["c"] = "Snow-Testrealm",
 		}, -- [2]
 		{
-			["id"] = "Snow-Testrealm:3",
-			["b"] = 50150,
-			["sub"] = "Goldshire",
+			["src"] = "vendor",
+			["zone"] = "Elwynn Forest",
 			["map"] = 37,
+			["b"] = 50150,
+			["id"] = "Snow-Testrealm:3",
 			["m"] = {
-				["item"] = "[Item 2]",
 				["npc"] = "Vendorbot",
 				["qty"] = 1,
+				["item"] = "[Item 2]",
 			},
-			["zone"] = "Elwynn Forest",
+			["sub"] = "Goldshire",
 			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001000,
-			["src"] = "vendor",
 			["d"] = -100,
+			["t"] = 1760001000,
+			["c"] = "Snow-Testrealm",
 		}, -- [3]
 		{
-			["id"] = "Snow-Testrealm:4",
-			["b"] = 48916,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001000,
 			["src"] = "repair",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 48916,
+			["id"] = "Snow-Testrealm:4",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = -1234,
+			["t"] = 1760001000,
+			["c"] = "Snow-Testrealm",
 		}, -- [4]
 		{
-			["id"] = "Snow-Testrealm:5",
-			["b"] = 58416,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["m"] = {
-				["deposit"] = 100,
-				["buyer"] = "Buyerguy",
-				["price"] = 10000,
-				["cut"] = 600,
-				["subject"] = "Auction successful: Linen Cloth",
-				["from"] = "Auction House",
-				["item"] = "Linen Cloth",
-			},
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001006,
 			["src"] = "auction_sale",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 58416,
+			["id"] = "Snow-Testrealm:5",
+			["m"] = {
+				["cut"] = 600,
+				["deposit"] = 100,
+				["item"] = "Linen Cloth",
+				["from"] = "Auction House",
+				["buyer"] = "Buyerguy",
+				["subject"] = "Auction successful: Linen Cloth",
+				["price"] = 10000,
+			},
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 9500,
+			["t"] = 1760001006,
+			["c"] = "Snow-Testrealm",
 		}, -- [5]
 		{
-			["id"] = "Snow-Testrealm:6",
-			["b"] = 78416,
-			["sub"] = "Goldshire",
+			["src"] = "mail",
+			["zone"] = "Elwynn Forest",
 			["map"] = 37,
+			["b"] = 78416,
+			["id"] = "Snow-Testrealm:6",
 			["m"] = {
 				["from"] = "Altchar",
 				["subject"] = "gold",
 			},
-			["zone"] = "Elwynn Forest",
+			["sub"] = "Goldshire",
 			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001006,
-			["src"] = "mail",
 			["d"] = 20000,
+			["t"] = 1760001006,
+			["c"] = "Snow-Testrealm",
 		}, -- [6]
 		{
-			["id"] = "Snow-Testrealm:7",
-			["b"] = 73386,
-			["sub"] = "Goldshire",
+			["src"] = "mail_send",
+			["zone"] = "Elwynn Forest",
 			["map"] = 37,
+			["b"] = 73386,
+			["id"] = "Snow-Testrealm:7",
 			["m"] = {
 				["sent"] = 5000,
-				["subject"] = "here you go",
 				["postage"] = 30,
+				["subject"] = "here you go",
 				["to"] = "Altchar",
 			},
-			["zone"] = "Elwynn Forest",
+			["sub"] = "Goldshire",
 			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001006,
-			["src"] = "mail_send",
 			["d"] = -5030,
+			["t"] = 1760001006,
+			["c"] = "Snow-Testrealm",
 		}, -- [7]
 		{
-			["id"] = "Snow-Testrealm:8",
-			["b"] = 74163,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["m"] = {
-				["quest_id"] = 42,
-				["quest"] = "Quest 42",
-			},
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001012,
 			["src"] = "quest",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 74163,
+			["id"] = "Snow-Testrealm:8",
+			["m"] = {
+				["quest"] = "Quest 42",
+				["quest_id"] = 42,
+			},
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 777,
+			["t"] = 1760001012,
+			["c"] = "Snow-Testrealm",
 		}, -- [8]
 		{
-			["id"] = "Snow-Testrealm:9",
-			["b"] = 74175,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001018,
 			["src"] = "loot",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 74175,
+			["id"] = "Snow-Testrealm:9",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 12,
+			["t"] = 1760001018,
+			["c"] = "Snow-Testrealm",
 		}, -- [9]
 		{
-			["id"] = "Snow-Testrealm:10",
-			["b"] = 73625,
-			["sub"] = "Goldshire",
+			["src"] = "flight",
+			["zone"] = "Elwynn Forest",
 			["map"] = 37,
+			["b"] = 73625,
+			["id"] = "Snow-Testrealm:10",
 			["m"] = {
 				["dest"] = "Stormwind",
 			},
-			["zone"] = "Elwynn Forest",
+			["sub"] = "Goldshire",
 			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001024,
-			["src"] = "flight",
 			["d"] = -550,
+			["t"] = 1760001024,
+			["c"] = "Snow-Testrealm",
 		}, -- [10]
 		{
-			["id"] = "Snow-Testrealm:11",
-			["b"] = 73325,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001030,
 			["src"] = "barber",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 73325,
+			["id"] = "Snow-Testrealm:11",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = -300,
+			["t"] = 1760001030,
+			["c"] = "Snow-Testrealm",
 		}, -- [11]
 		{
-			["id"] = "Snow-Testrealm:12",
-			["b"] = 73324,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001041,
 			["src"] = "unknown",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 73324,
+			["id"] = "Snow-Testrealm:12",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = -1,
+			["t"] = 1760001041,
+			["c"] = "Snow-Testrealm",
 		}, -- [12]
 		{
-			["id"] = "Snow-Testrealm:13",
-			["b"] = 73329,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001000",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001042,
 			["src"] = "unknown",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 73329,
+			["id"] = "Snow-Testrealm:13",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001000",
 			["d"] = 5,
+			["t"] = 1760001042,
+			["c"] = "Snow-Testrealm",
 		}, -- [13]
 		{
-			["id"] = "Snow-Testrealm:14",
-			["b"] = 74328,
-			["sub"] = "Goldshire",
-			["map"] = 37,
-			["zone"] = "Elwynn Forest",
-			["s"] = "Snow-Testrealm:1760001042",
-			["c"] = "Snow-Testrealm",
-			["t"] = 1760001042,
 			["src"] = "reconcile",
+			["zone"] = "Elwynn Forest",
+			["map"] = 37,
+			["b"] = 74328,
+			["id"] = "Snow-Testrealm:14",
+			["sub"] = "Goldshire",
+			["s"] = "Snow-Testrealm:1760001042",
 			["d"] = 999,
+			["t"] = 1760001042,
+			["c"] = "Snow-Testrealm",
 		}, -- [14]
 	},
 	["scans"] = {
 		{
+			["kind"] = "commodity",
+			["id"] = "Snow-Testrealm:s1",
+			["item"] = 2589,
+			["v"] = 0,
 			["rows"] = {
 				15, -- [1]
 				200, -- [2]
@@ -218,26 +259,26 @@ GoldmineDB = {
 				20, -- [5]
 				500, -- [6]
 			},
-			["id"] = "Snow-Testrealm:s1",
-			["v"] = 0,
-			["c"] = "Snow-Testrealm",
 			["t"] = 1760001042,
-			["kind"] = "commodity",
-			["item"] = 2589,
+			["c"] = "Snow-Testrealm",
 		}, -- [1]
 		{
+			["kind"] = "item",
+			["id"] = "Snow-Testrealm:s2",
+			["item"] = 2575,
+			["v"] = 0,
 			["rows"] = {
 				25000, -- [1]
 				1, -- [2]
 			},
-			["id"] = "Snow-Testrealm:s2",
-			["v"] = 0,
-			["c"] = "Snow-Testrealm",
 			["t"] = 1760001042,
-			["kind"] = "item",
-			["item"] = 2575,
+			["c"] = "Snow-Testrealm",
 		}, -- [2]
 		{
+			["kind"] = "browse",
+			["id"] = "Snow-Testrealm:s3",
+			["item"] = 0,
+			["v"] = 0,
 			["rows"] = {
 				2589, -- [1]
 				0, -- [2]
@@ -248,59 +289,225 @@ GoldmineDB = {
 				90000, -- [7]
 				2, -- [8]
 			},
-			["id"] = "Snow-Testrealm:s3",
-			["v"] = 0,
-			["c"] = "Snow-Testrealm",
 			["t"] = 1760001043,
-			["kind"] = "browse",
-			["item"] = 0,
+			["c"] = "Snow-Testrealm",
 		}, -- [3]
+		{
+			["kind"] = "commodity",
+			["id"] = "Snow-Testrealm:s4",
+			["item"] = 210930,
+			["v"] = 0,
+			["rows"] = {
+				400000, -- [1]
+				50, -- [2]
+				410000, -- [3]
+				100, -- [4]
+				450000, -- [5]
+				500, -- [6]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [4]
+		{
+			["kind"] = "commodity",
+			["id"] = "Snow-Testrealm:s5",
+			["item"] = 211879,
+			["v"] = 0,
+			["rows"] = {
+				1200000, -- [1]
+				5, -- [2]
+				1300050, -- [3]
+				10, -- [4]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [5]
+		{
+			["kind"] = "item",
+			["id"] = "Snow-Testrealm:s6",
+			["item"] = 222731,
+			["v"] = 0,
+			["rows"] = {
+				77000, -- [1]
+				1, -- [2]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [6]
+		{
+			["kind"] = "item",
+			["id"] = "Snow-Testrealm:s7",
+			["item"] = 5000,
+			["v"] = 0,
+			["rows"] = {
+				9900, -- [1]
+				1, -- [2]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [7]
+		{
+			["kind"] = "commodity",
+			["id"] = "Snow-Testrealm:s8",
+			["item"] = 210930,
+			["v"] = 0,
+			["rows"] = {
+				400000, -- [1]
+				50, -- [2]
+				410000, -- [3]
+				100, -- [4]
+				450000, -- [5]
+				500, -- [6]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [8]
+		{
+			["kind"] = "commodity",
+			["id"] = "Snow-Testrealm:s9",
+			["item"] = 211879,
+			["v"] = 0,
+			["rows"] = {
+				800000, -- [1]
+				3, -- [2]
+			},
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [9]
 	},
 	["warband"] = {
-		["t"] = 1760001049,
 		["items"] = {
 			[4306] = 50,
 		},
+		["t"] = 1760001049,
 		["by"] = "Snow-Testrealm",
 	},
-	["scanSeq"] = 3,
-	["chars"] = {
-		["Snow-Testrealm"] = {
-			["realm"] = "Testrealm",
-			["seq"] = 14,
-			["inventory"] = {
-				["bankAt"] = 1760001049,
-				["bags"] = {
-					[2589] = 25,
-					[2592] = 3,
-				},
-				["bank"] = {
-					[2996] = 7,
-				},
-				["bagsAt"] = 1760001049,
-			},
-			["money"] = 74328,
-			["name"] = "Snow",
-			["professions"] = {
-				["Tailoring"] = {
-					["recipes"] = {
-						[100] = {
-							["o"] = 2996,
-							["r"] = {
-								2589, -- [1]
-								2, -- [2]
-							},
-							["q"] = 1.0,
-							["n"] = "Bolt of Linen Cloth",
-						},
-					},
-					["t"] = 1760001044,
-				},
-			},
-			["lastSeen"] = 1760001042,
-			["region"] = "US",
-			["class"] = "MAGE",
-			["faction"] = "Alliance",
-		},
+	["scanSeq"] = 9,
+	["settings"] = {
+	},
+	["taskResults"] = {
+		{
+			["task"] = "t1",
+			["status"] = "partial",
+			["qty"] = 130,
+			["paid"] = 52520000,
+			["closed"] = true,
+			["id"] = "p2026-10-20a:t1",
+			["seen"] = 404000,
+			["reason"] = "too expensive: jumped 10%",
+			["plan"] = "p2026-10-20a",
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [1]
+		{
+			["t"] = 1760001049,
+			["id"] = "p2026-10-20a:t2",
+			["status"] = "done",
+			["seen"] = 1300050,
+			["c"] = "Snow-Testrealm",
+			["qty"] = 20,
+			["plan"] = "p2026-10-20a",
+			["task"] = "t2",
+		}, -- [2]
+		{
+			["task"] = "t3",
+			["id"] = "p2026-10-20a:t3",
+			["status"] = "done",
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+			["qty"] = 1,
+			["plan"] = "p2026-10-20a",
+			["closed"] = true,
+		}, -- [3]
+		{
+			["t"] = 1760001049,
+			["id"] = "p2026-10-20a:t4",
+			["status"] = "done",
+			["seen"] = 700000,
+			["c"] = "Snow-Testrealm",
+			["qty"] = 2,
+			["plan"] = "p2026-10-20a",
+			["task"] = "t4",
+		}, -- [4]
+		{
+			["id"] = "p2026-10-20a:t5",
+			["status"] = "done",
+			["seen"] = 77000,
+			["c"] = "Snow-Testrealm",
+			["t"] = 1760001049,
+			["plan"] = "p2026-10-20a",
+			["task"] = "t5",
+		}, -- [5]
+		{
+			["id"] = "p2026-10-20a:t6",
+			["status"] = "done",
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+			["qty"] = 50,
+			["plan"] = "p2026-10-20a",
+			["task"] = "t6",
+		}, -- [6]
+		{
+			["id"] = "p2026-10-20a:t7",
+			["status"] = "done",
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+			["qty"] = 5,
+			["plan"] = "p2026-10-20a",
+			["task"] = "t7",
+		}, -- [7]
+		{
+			["task"] = "b1",
+			["status"] = "partial",
+			["qty"] = 1,
+			["paid"] = 9000,
+			["closed"] = true,
+			["id"] = "p-test-2:b1",
+			["seen"] = 9900,
+			["reason"] = "no time",
+			["plan"] = "p-test-2",
+			["t"] = 1760001049,
+			["c"] = "Snow-Testrealm",
+		}, -- [8]
+		{
+			["task"] = "b2",
+			["status"] = "blocked",
+			["plan"] = "p-test-2",
+			["closed"] = true,
+			["c"] = "Snow-Testrealm",
+			["seen"] = 400000,
+			["reason"] = "market moved",
+			["t"] = 1760001049,
+			["id"] = "p-test-2:b2",
+		}, -- [9]
+		{
+			["task"] = "w1",
+			["id"] = "p-test-2:w1",
+			["status"] = "skipped",
+			["c"] = "Snow-Testrealm",
+			["reason"] = "don't trust it",
+			["t"] = 1760001049,
+			["plan"] = "p-test-2",
+			["closed"] = true,
+		}, -- [10]
+		{
+			["task"] = "p1",
+			["id"] = "p-test-2:p1",
+			["status"] = "below_floor",
+			["seen"] = 800000,
+			["c"] = "Snow-Testrealm",
+			["t"] = 1760001049,
+			["plan"] = "p-test-2",
+			["closed"] = true,
+		}, -- [11]
+		{
+			["id"] = "p-old:e1",
+			["status"] = "expired",
+			["task"] = "e1",
+			["c"] = "Snow-Testrealm",
+			["t"] = 1760001049,
+			["plan"] = "p-old",
+			["closed"] = true,
+		}, -- [12]
 	},
 }

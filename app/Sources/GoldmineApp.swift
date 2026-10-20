@@ -64,7 +64,7 @@ struct MenuContent: View {
             Divider()
             Button(engine.syncing ? "Uploading…" : "Upload Game Data Now") { Task { await engine.syncNow() } }
                 .disabled(engine.syncing)
-            Button("Download Prices to Addon") { Task { await engine.pushNow() } }
+            Button("Download Prices and Tasks to Addon") { Task { await engine.pushNow() } }
         }
         Divider()
         Button("Open Goldmine…") {

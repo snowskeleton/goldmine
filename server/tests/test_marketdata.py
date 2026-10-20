@@ -197,8 +197,9 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(self.rpc("notifications/initialized", mid=None).status_code, 202)
         tools = {t["name"]: t for t in self.rpc("tools/list").json()["result"]["tools"]}
         self.assertEqual(set(tools), {"list_markets", "search_items", "get_current_prices", "get_price_history",
-                                      "get_market_values", "get_deals", "get_crafts"})
-        self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in tools.values()))
+                                      "get_market_values", "get_deals", "get_crafts",
+                                      "publish_plan", "get_plan", "get_task_results"})
+        self.assertTrue(all(t["annotations"]["readOnlyHint"] for n, t in tools.items() if n != "publish_plan"))
         res = self.rpc("tools/call", {"name": "get_price_history", "arguments": {
             "market": "us-testrealm", "item": "Linen Cloth", "since": T0, "resolution": "raw"}}).json()["result"]
         self.assertNotIn("isError", res)

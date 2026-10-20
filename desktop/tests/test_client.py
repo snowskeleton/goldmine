@@ -44,6 +44,7 @@ class StubServer:
     def __init__(self):
         self.addon_zip = zip_addon(REPO_ADDON)
         self.uploads = []
+        self.tasks_lua = b"GoldmineTasks = { generated = 1, tasks = {} }\n"  # None: a server without the queue
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -79,6 +80,8 @@ class StubServer:
                     self.send(200, stub.addon_zip, "application/zip")
                 elif path == "/api/v1/addon-data":
                     self.send(200, b"Goldmine_Data = {}\n", "text/plain")
+                elif path == "/api/v1/addon-tasks" and stub.tasks_lua is not None:
+                    self.send(200, stub.tasks_lua, "text/plain")
                 elif path == "/api/v1/export.csv":
                     self.send(200, f"id,character\n1,Snow-Testrealm\n#{self.path}\n".encode(), "text/csv")
                 else:
@@ -165,6 +168,8 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(self.dest("_classic_").exists())
 
         (self.dest() / "Data.lua").write_text("Goldmine_Data = {}")
+        (self.dest() / "Tasks.lua").write_text("GoldmineTasks = {}")
+        self.assertEqual(addon.content_hash(self.dest()), addon.content_hash(REPO_ADDON))  # generated files don't count
         (self.dest() / "Goldmine.lua").write_text("-- old version")
         st = json.loads(self.cli("addon", "status", "--json", *self.wow_args())[1])
         retail = next(c for c in st["copies"] if c["flavor"] == "_retail_")
@@ -174,6 +179,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("_retail_: updated", out)
         self.assertEqual((self.dest() / "Data.lua").read_text(), "Goldmine_Data = {}")
+        self.assertEqual((self.dest() / "Tasks.lua").read_text(), "GoldmineTasks = {}")
         self.assertEqual(addon.content_hash(self.dest()), addon.content_hash(REPO_ADDON))
         self.assertEqual([p.name for p in self.dest().parent.iterdir()], ["Goldmine"])  # no staging left
         self.assertIn("_retail_: current", self.cli("addon", "install", *self.wow_args())[1])
@@ -195,6 +201,19 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         for flavor in ("_retail_", "_classic_"):
             self.assertEqual((self.dest(flavor) / "Data.lua").read_text(), "Goldmine_Data = {}\n")
+            self.assertEqual((self.dest(flavor) / "Tasks.lua").read_bytes(), self.server.tasks_lua)
+
+    def test_push_against_server_without_task_queue(self):
+        self.cli("addon", "install", "--flavor", "_retail_", *self.wow_args())
+        self.server.tasks_lua = None
+        try:
+            code, _, err = self.cli("push", *self.wow_args())
+        finally:
+            self.server.tasks_lua = b"GoldmineTasks = { generated = 1, tasks = {} }\n"
+        self.assertEqual(code, 0, err)
+        self.assertIn("addon tasks: skipped", err)
+        self.assertTrue((self.dest() / "Data.lua").exists())
+        self.assertFalse((self.dest() / "Tasks.lua").exists())
 
     def test_sync_uploads_saved_variables(self):
         sv = self.wow / "_retail_" / "WTF" / "Account" / "ACCT" / "SavedVariables"

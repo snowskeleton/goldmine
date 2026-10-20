@@ -42,14 +42,42 @@ function hooksecurefunc(owner, name, fn)
     hooks[name] = true
 end
 
-function CreateFrame()
-    local f = { events = {} }
-    function f:RegisterEvent(e) self.events[e] = true end
-    function f:UnregisterEvent(e) self.events[e] = nil end
-    function f:SetScript(_, fn) self.onEvent = fn end
+-- Frames and widgets: events and scripts work; layout calls are accepted and ignored.
+local Widget = {}
+local function noop() end
+local function NewWidget()
+    local w = setmetatable({ events = {}, scripts = {}, shown = true, enabled = true }, Widget)
+    return w
+end
+Widget.__index = function(_, k) -- unknown methods (Capitalized) are no-ops; unknown fields are nil
+    return rawget(Widget, k) or (type(k) == "string" and k:find("^%u") and noop) or nil
+end
+function Widget:RegisterEvent(e) self.events[e] = true end
+function Widget:UnregisterEvent(e) self.events[e] = nil end
+function Widget:SetScript(name, fn)
+    self.scripts[name] = fn
+    if name == "OnEvent" then self.onEvent = fn end
+end
+function Widget:Show() self.shown = true end
+function Widget:Hide() self.shown = false end
+function Widget:IsShown() return self.shown end
+function Widget:SetText(t) self.text = t end
+function Widget:GetText() return self.text end
+function Widget:Enable() self.enabled = true end
+function Widget:Disable() self.enabled = false end
+function Widget:IsEnabled() return self.enabled end
+function Widget:CreateFontString() return NewWidget() end
+function Widget:Click()
+    if self.enabled and self.scripts.OnClick then self.scripts.OnClick(self, "LeftButton") end
+end
+
+function CreateFrame(_, name)
+    local f = NewWidget()
+    if name then _G[name] = f end
     frames[#frames + 1] = f
     return f
 end
+UIParent = NewWidget()
 
 -- Money-moving APIs. The server applies money changes *after* the call, so tests
 -- call these, then change money and fire PLAYER_MONEY themselves.
@@ -131,7 +159,7 @@ local tooltipHook
 TooltipDataProcessor = { AddTooltipPostCall = function(_, fn) tooltipHook = fn end }
 Enum.TooltipDataType = { Item = 0 }
 -- Data.lua is generated per machine (and untracked); the Advice tests below supply their own Goldmine_Data.
-for _, file in ipairs({ "Goldmine.lua", "Market.lua", "Advice.lua" }) do
+for _, file in ipairs({ "Goldmine.lua", "Market.lua", "Advice.lua", "TaskQueue.lua" }) do
     assert(loadfile("Goldmine/" .. file))("Goldmine", ns)
 end
 fire("ADDON_LOADED", "Goldmine")
@@ -361,6 +389,339 @@ expect("crafts/deals print", #printed - before == 4 and printed[before + 2]:find
     and printed[before + 1]:find("retail %- Testrealm") ~= nil,
     printed[before + 2])
 expect("deal shows 60% off", printed[#printed]:find("60%% off") ~= nil, printed[#printed])
+
+---------------------------------------------------------------------------
+-- TaskQueue.lua: the trader's plan, live price checks, one protected call per click
+---------------------------------------------------------------------------
+
+-- Protected calls are counted; each must come from a click, at most one per click.
+local inClick, clickCalls, maxPerClick, outsideClick = false, 0, 0, 0
+local calls, callArgs = {}, {}
+local function Protected(name, fn)
+    return function(...)
+        calls[name] = (calls[name] or 0) + 1
+        callArgs[name] = { ... }
+        if inClick then clickCalls = clickCalls + 1 else outsideClick = outsideClick + 1 end
+        if fn then return fn(...) end
+    end
+end
+local function click(button)
+    inClick, clickCalls = true, 0
+    button:Click()
+    inClick = false
+    maxPerClick = math.max(maxPerClick, clickCalls)
+end
+local function count(name) return calls[name] or 0 end
+
+local ahCommodity, ahItems, owned = {}, {}, {}
+for k, v in pairs({
+    MakeItemKey = function(id) return { itemID = id } end,
+    GetNumCommoditySearchResults = function(id) return #(ahCommodity[id] or {}) end,
+    GetCommoditySearchResultInfo = function(id, i) return ahCommodity[id][i] end,
+    GetNumItemSearchResults = function(key) return #(ahItems[key.itemID] or {}) end,
+    GetItemSearchResultInfo = function(key, i) return ahItems[key.itemID][i] end,
+    GetNumOwnedAuctions = function() return #owned end,
+    GetOwnedAuctionInfo = function(i) return owned[i] end,
+    GetItemCommodityStatus = function(loc) return loc.bag == 0 and 2 or 1 end,
+    SendSearchQuery = Protected("SendSearchQuery"),
+    StartCommoditiesPurchase = Protected("StartCommoditiesPurchase"),
+    ConfirmCommoditiesPurchase = Protected("ConfirmCommoditiesPurchase"),
+    CancelCommoditiesPurchase = Protected("CancelCommoditiesPurchase"),
+    PlaceBid = Protected("PlaceBid"),
+    PostCommodity = Protected("PostCommodity"),
+    PostItem = Protected("PostItem"),
+    QueryOwnedAuctions = Protected("QueryOwnedAuctions"),
+    CancelAuction = Protected("CancelAuction"),
+}) do C_AuctionHouse[k] = v end
+Enum.ItemCommodityStatus = { Unknown = 0, Item = 1, Commodity = 2 }
+ItemLocation = { CreateFromBagAndSlot = function(_, bag, slot) return { bag = bag, slot = slot } end }
+C_TradeSkillUI.OpenRecipe = Protected("OpenRecipe")
+C_TradeSkillUI.CraftRecipe = Protected("CraftRecipe")
+local craftBox = NewWidget()
+function craftBox:SetValue(v) self.value = v end
+ProfessionsFrame = { CraftingPage = { CreateMultipleInputBox = craftBox } }
+SendMail = Protected("SendMail")
+SendMailFrame = NewWidget()
+SendMailNameEditBox = NewWidget()
+-- Using a bag item at the mailbox attaches it (locked); at a merchant it sells it (gone).
+local atMerchant = false
+C_Container.UseContainerItem = Protected("UseContainerItem", function(bag, slot)
+    local info = containers[bag][slot]
+    if atMerchant then table.remove(containers[bag], slot) else info.isLocked = true end
+end)
+for bag = 0, 5 do containers[bag] = {} end
+
+local Q = ns.TaskQueue
+local function results() return GoldmineDB.taskResults or {} end
+local function result(plan, task)
+    for _, r in ipairs(results()) do if r.id == plan .. ":" .. task then return r end end
+end
+local function ui() return GoldmineTaskQueue end
+local function a1() return ui().action1 end
+local function a2() return ui().action2 end
+local function cur() return Q.current end
+local function load(plan)
+    GoldmineTasks = plan
+    SlashCmdList.GOLDMINE("tasks reset")
+end
+
+-- No plan: the window says so, and opening the AH doesn't pop it up.
+GoldmineTasks = nil
+fire("AUCTION_HOUSE_SHOW")
+expect("no plan: queue stays hidden at the AH", GoldmineTaskQueue == nil)
+fire("AUCTION_HOUSE_CLOSED")
+
+-- The plan the server renders (server/tests/fixtures/Tasks.lua, the docs/trader.md example).
+assert(loadfile("../server/tests/fixtures/Tasks.lua"))()
+load(GoldmineTasks)
+expect("server's Tasks.lua loads", Q.plan and Q.plan.plan == "p2026-10-20a" and #Q.tasks == 7)
+SlashCmdList.GOLDMINE("tasks")
+expect("/goldmine tasks shows the queue", ui() and ui():IsShown() and ui().header.text:find("p2026%-10%-20a") ~= nil,
+    ui() and ui().header.text)
+expect("rows list tasks in order with est_min", ui().rows[1].text.text:find("1%. Buy 200") ~= nil
+    and ui().rows[1].extra.text == "2m" and ui().rows[7].text.text:find("7%. Vendor") ~= nil, ui().rows[1].text.text)
+expect("ev shown", ui().rows[2].extra.text:find("ev 18") ~= nil, ui().rows[2].extra.text)
+expect("AH tasks need the AH open", not a1().enabled and ui().info.text:find("Open the auction house") ~= nil)
+SlashCmdList.GOLDMINE("tasks")
+expect("toggle hides it", not ui():IsShown())
+fire("AUCTION_HOUSE_SHOW")
+expect("opening the AH shows it on the first AH task", ui():IsShown() and cur() == "t1")
+
+-- t1: buy 200 commodity at <= 41g 20s (412000). Search, quote, confirm: three clicks.
+click(a1())
+expect("search is one click, one query", count("SendSearchQuery") == 1 and callArgs.SendSearchQuery[1].itemID == 210930)
+ahCommodity[210930] = {
+    { unitPrice = 400000, quantity = 50 },
+    { unitPrice = 410000, quantity = 100, containsOwnerItem = true, numOwnerItems = 20 },
+    { unitPrice = 450000, quantity = 500 },
+}
+fire("COMMODITY_SEARCH_RESULTS_UPDATED", 210930)
+expect("quote offered only for units under the limit (not mine)", a2().text == "Get quote for 130" and a2().enabled, a2().text)
+click(a2())
+expect("quote requested", count("StartCommoditiesPurchase") == 1 and callArgs.StartCommoditiesPurchase[2] == 130)
+expect("waiting for the quote", not a2().enabled)
+fire("COMMODITY_PRICE_UPDATED", 500000, 65000000) -- the price moved since the search
+expect("quote over qty x max_unit: no Confirm", a2().text == "Release quote", a2().text)
+click(a2())
+expect("release is one call, never a purchase", count("CancelCommoditiesPurchase") == 1 and count("ConfirmCommoditiesPurchase") == 0)
+click(a2()) -- quote again
+fire("COMMODITY_PRICE_UPDATED", 404000, 52520000)
+expect("quote within limit: Confirm enabled", a2().enabled and a2().text:find("^Confirm") ~= nil, a2().text)
+click(a2())
+expect("confirm buys the quoted quantity", count("ConfirmCommoditiesPurchase") == 1
+    and callArgs.ConfirmCommoditiesPurchase[1] == 210930 and callArgs.ConfirmCommoditiesPurchase[2] == 130)
+expect("no second purchase while one is in flight", not a1().enabled and a2().spec == nil)
+fire("COMMODITY_PURCHASE_SUCCEEDED")
+local r1 = result("p2026-10-20a", "t1")
+expect("partial fill recorded with paid and live price", r1 and r1.status == "partial" and r1.qty == 130
+    and r1.paid == 52520000 and r1.seen == 404000 and r1.c == "Snow-Testrealm", r1 and r1.status)
+expect("must search again before buying more", a1().text == "Search" and a2().spec == nil, a1().text)
+expect("t3 (after t1) is ready after a partial fill", Q.Ready(Q.byId.t3))
+-- Skip the rest: asks why.
+click(ui().skip)
+expect("skip opens the why prompt", ui().prompt:IsShown() and ui().prompt.presets[1].text == "too expensive")
+ui().prompt.note:SetText("jumped 10%")
+click(ui().prompt.presets[1])
+r1 = result("p2026-10-20a", "t1")
+expect("skip after a partial fill keeps partial, with the reason", r1.status == "partial" and r1.closed
+    and r1.reason == "too expensive: jumped 10%" and r1.qty == 130, r1.reason)
+expect("queue moves on", cur() == "t2" and not ui().prompt:IsShown(), cur())
+
+-- t2: post 20 between 95g and 140g, undercut 1c, 24h. Bag 0 holds them (a commodity).
+containers[0] = { { itemID = 211879, stackCount = 20 } }
+click(a1())
+ahCommodity[211879] = {
+    { unitPrice = 1200000, quantity = 5, containsOwnerItem = true, numOwnerItems = 5 }, -- mine: ignored
+    { unitPrice = 1300050, quantity = 10 },
+}
+fire("COMMODITY_SEARCH_RESULTS_UPDATED", 211879)
+expect("post price = lowest other - undercut, whole silver", a2().text == "Post 20 at " .. ns.FormatMoney(1300000), a2().text)
+click(a2())
+local pc = callArgs.PostCommodity
+expect("one PostCommodity: location, 24h, qty, unit price", count("PostCommodity") == 1 and pc[1].bag == 0
+    and pc[2] == 2 and pc[3] == 20 and pc[4] == 1300000)
+local r2 = result("p2026-10-20a", "t2")
+expect("post recorded with the live low", r2.status == "done" and r2.qty == 20 and r2.seen == 1300050)
+expect("then the craft (t3)", cur() == "t3", cur())
+
+-- t3 craft: opens the recipe and fills the count; the human presses Create.
+C_TradeSkillUI.GetRecipeSchematic = function() return { outputItemID = 222000 } end
+click(a1())
+expect("open recipe sets the quantity, crafts nothing", count("OpenRecipe") == 1 and craftBox.value == 20
+    and count("CraftRecipe") == 0)
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { itemID = 222000, quantity = 1 })
+expect("craft results counted", result("p2026-10-20a", "t3").status == "partial" and result("p2026-10-20a", "t3").qty == 1)
+click(a2()) -- Mark done
+expect("mark done", result("p2026-10-20a", "t3").status == "done" and cur() == "t4", cur())
+
+-- t4 cancel mine below 90g: list, then one cancel per click.
+click(a1())
+owned = {
+    { auctionID = 21, itemKey = { itemID = 211879 }, buyoutAmount = 850000, quantity = 1, status = 0 },
+    { auctionID = 22, itemKey = { itemID = 211879 }, buyoutAmount = 950000, quantity = 1, status = 0 },
+    { auctionID = 23, itemKey = { itemID = 211879 }, buyoutAmount = 800000, quantity = 1, status = 1 }, -- sold
+    { auctionID = 24, itemKey = { itemID = 1 }, buyoutAmount = 850000, quantity = 1, status = 0 },
+    { auctionID = 25, itemKey = { itemID = 211879 }, buyoutAmount = 700000, quantity = 1, status = 0 },
+}
+fire("OWNER_AUCTIONS_UPDATED")
+expect("only my matching active auctions, cheapest first", a2().text:find("Cancel 1") ~= nil and Q.state.t4.owned[1].auctionID == 25
+    and #Q.state.t4.owned == 2)
+click(a2())
+expect("one cancel per click", count("CancelAuction") == 1 and callArgs.CancelAuction[1] == 25
+    and result("p2026-10-20a", "t4").status == "partial")
+click(a2())
+expect("cancel done", count("CancelAuction") == 2 and result("p2026-10-20a", "t4").status == "done"
+    and result("p2026-10-20a", "t4").qty == 2 and cur() == "t5")
+
+-- t5 scan: the search result is the outcome.
+click(a1())
+ahItems[222731] = { { auctionID = 31, buyoutAmount = 77000, quantity = 1 } }
+fire("ITEM_SEARCH_RESULTS_UPDATED", { itemID = 222731 })
+expect("scan records the live price", result("p2026-10-20a", "t5").status == "done"
+    and result("p2026-10-20a", "t5").seen == 77000 and cur() == "t6")
+fire("AUCTION_HOUSE_CLOSED")
+
+-- t6 mail 50 to Altname: one stack attached per click; Send is Blizzard's button.
+containers[0] = { { itemID = 210930, stackCount = 20 }, { itemID = 210930, stackCount = 20 } }
+containers[1] = { { itemID = 210930, stackCount = 10 }, { itemID = 210930, stackCount = 30 } }
+expect("mail needs a mailbox", not a1().enabled)
+fire("MAIL_SHOW")
+SendMailFrame:Show()
+click(a1())
+click(a1())
+click(a1())
+expect("three stacks attached, recipient filled", count("UseContainerItem") == 3 and SendMailNameEditBox.text == "Altname"
+    and Q.state.t6.attached == 50)
+expect("no overshoot: the 30-stack isn't offered", not a1().enabled)
+expect("addon never sends mail", count("SendMail") == 0)
+fire("MAIL_SEND_SUCCESS")
+expect("mail done on send", result("p2026-10-20a", "t6").status == "done" and result("p2026-10-20a", "t6").qty == 50)
+fire("MAIL_CLOSED")
+
+-- t7 vendor: one stack sold per click.
+containers[0], containers[1] = { { itemID = 12345, stackCount = 3 } }, { { itemID = 12345, stackCount = 2 } }
+fire("MERCHANT_SHOW")
+atMerchant = true
+expect("vendor task selected at the merchant", cur() == "t7" and a1().enabled, cur())
+click(a1())
+expect("one stack sold", count("UseContainerItem") == 4 and result("p2026-10-20a", "t7").status == "partial")
+click(a1())
+expect("vendor done", result("p2026-10-20a", "t7").status == "done" and result("p2026-10-20a", "t7").qty == 5)
+atMerchant = false
+fire("MERCHANT_CLOSED")
+expect("all done", cur() == nil and ui().title.text == "All done.", ui().title.text)
+
+-- Second plan: item auctions, a blocked buy, below-floor post, a dependency.
+local T = time()
+load({ plan = "p-test-2", created = T, expires = T + 3600, paper = false, budget_min = 10, tasks = {
+    { id = "b1", kind = "buy", item = 5000, qty = 2, max_unit = 10000, est_min = 1 },
+    { id = "b2", kind = "buy", item = 210930, qty = 10, max_unit = 300000, est_min = 1 },
+    { id = "w1", kind = "post", item = 211879, qty = 1, floor = 950000, ceil = 1400000, after = "b2", est_min = 1 },
+    { id = "p1", kind = "post", item = 211879, qty = 1, floor = 950000, ceil = 1400000, est_min = 1 },
+} })
+fire("AUCTION_HOUSE_SHOW")
+expect("new plan, first task", Q.plan.plan == "p-test-2" and cur() == "b1")
+click(a1())
+ahItems[5000] = {
+    { auctionID = 11, buyoutAmount = 12000, quantity = 1 },
+    { auctionID = 12, buyoutAmount = 9000, quantity = 1 },
+    { auctionID = 13, buyoutAmount = 9500, quantity = 1, containsOwnerItem = true },
+}
+fire("ITEM_SEARCH_RESULTS_UPDATED", { itemID = 5000 })
+expect("item buy offers the cheapest listing that isn't mine", a2().enabled and a2().text == "Buy 1 for " .. ns.FormatMoney(9000), a2().text)
+click(a2())
+expect("one PlaceBid at buyout", count("PlaceBid") == 1 and callArgs.PlaceBid[1] == 12 and callArgs.PlaceBid[2] == 9000)
+expect("listing over max_unit can't be bought", not a2().enabled)
+click(a2())
+expect("disabled button does nothing", count("PlaceBid") == 1)
+expect("partial item fill", result("p-test-2", "b1").status == "partial" and result("p-test-2", "b1").paid == 9000)
+-- An AH error right after a click undoes it.
+click(a1())
+ahItems[5000] = { { auctionID = 14, buyoutAmount = 9900, quantity = 1 } }
+fire("ITEM_SEARCH_RESULTS_UPDATED", { itemID = 5000 })
+click(a2())
+expect("second buy counted", result("p-test-2", "b1").status == "done" and result("p-test-2", "b1").qty == 2)
+fire("AUCTION_HOUSE_SHOW_ERROR", 1)
+expect("AH error reverts the last buy", result("p-test-2", "b1").status == "partial" and result("p-test-2", "b1").qty == 1
+    and result("p-test-2", "b1").paid == 9000)
+click(ui().skip)
+click(ui().prompt.presets[2])
+expect("skip reason recorded", result("p-test-2", "b1").reason == "no time" and cur() == "b2", tostring(result("p-test-2", "b1").reason) .. " " .. tostring(cur()) .. " " .. tostring(ui().prompt:IsShown()))
+
+-- b2: everything above 30g: no quote can be asked for; skipping records blocked.
+click(a1())
+fire("COMMODITY_SEARCH_RESULTS_UPDATED", 210930)
+expect("nothing at or under the limit: quote disabled", not a2().enabled and a2().text == "Get quote")
+local before = count("StartCommoditiesPurchase")
+click(a2())
+expect("disabled quote does nothing", count("StartCommoditiesPurchase") == before)
+expect("dependent task waits", select(1, Q.View(Q.byId.w1)).enabled == false)
+click(ui().skip)
+ui().prompt.note:SetText("market moved")
+click(ui().prompt.presets[5])
+local rb = result("p-test-2", "b2")
+expect("blocked with the live price and free text", rb.status == "blocked" and rb.seen == 400000 and rb.reason == "market moved",
+    rb.status .. " " .. tostring(rb.seen) .. " " .. tostring(rb.reason))
+expect("dependency on a blocked task stays disabled", cur() == "w1" and not a1().enabled)
+click(ui().skip)
+click(ui().prompt.presets[4])
+
+-- p1: the live low is under the floor: refuse to post, record below_floor and the price.
+containers[0] = { { itemID = 211879, stackCount = 1 } }
+ahCommodity[211879] = { { unitPrice = 800000, quantity = 3 } }
+local posts = count("PostCommodity") + count("PostItem")
+click(a1())
+fire("COMMODITY_SEARCH_RESULTS_UPDATED", 211879)
+local rp = result("p-test-2", "p1")
+expect("below floor: not posted", count("PostCommodity") + count("PostItem") == posts and rp.status == "below_floor"
+    and rp.seen == 800000)
+fire("AUCTION_HOUSE_CLOSED")
+
+-- Price rules.
+local post = { floor = 950000, ceil = 1400000, undercut = 1 }
+expect("no competition: ceiling", Q.PostPrice(nil, post) == 1400000)
+expect("competition above ceiling: ceiling", Q.PostPrice(2000000, post) == 1400000)
+expect("at the floor: floor", Q.PostPrice(950000, post) == 950000)
+expect("below the floor: refuse", select(2, Q.PostPrice(949999, post)) == "below_floor")
+expect("quote limit", Q.QuoteOK(1000, 10, 100) and not Q.QuoteOK(1001, 10, 100) and not Q.QuoteOK(nil, 10, 100))
+
+-- Paper plan: shown, never actionable.
+load({ plan = "p-paper", created = T, expires = T + 3600, paper = true, budget_min = 5, tasks = {
+    { id = "x1", kind = "buy", item = 210930, qty = 10, max_unit = 999999999, est_min = 1 },
+    { id = "x2", kind = "scan", item = 222731, est_min = 1 },
+} })
+local snapshot = 0
+for _, n in pairs(calls) do snapshot = snapshot + n end
+fire("AUCTION_HOUSE_SHOW")
+expect("paper plan shows at the AH", ui():IsShown() and ui().header.text:find("PAPER") ~= nil)
+expect("paper plan: buttons disabled", not a1().enabled)
+click(a1())
+Q.current = "x2"
+Q.Refresh()
+click(a1())
+local after = 0
+for _, n in pairs(calls) do after = after + n end
+expect("paper plan: no protected calls", after == snapshot)
+fire("AUCTION_HOUSE_CLOSED")
+
+-- Expired plan: ignored, unfinished tasks recorded as expired.
+ui():Hide()
+load({ plan = "p-old", created = T - 7200, expires = T - 1, paper = false, budget_min = 5, tasks = {
+    { id = "e1", kind = "scan", item = 222731, est_min = 1 },
+} })
+fire("AUCTION_HOUSE_SHOW")
+expect("expired plan doesn't pop up", not ui():IsShown())
+expect("expired task recorded", result("p-old", "e1") and result("p-old", "e1").status == "expired")
+fire("AUCTION_HOUSE_CLOSED")
+-- Results survive a /reload: state is rebuilt from them.
+load({ plan = "p-test-2", created = T, expires = T + 3600, paper = false, budget_min = 10, tasks = {
+    { id = "b1", kind = "buy", item = 5000, qty = 2, max_unit = 10000, est_min = 1 },
+} })
+expect("reload restores partial progress", Q.state.b1.done == 1 and Q.state.b1.paid == 9000 and Q.Finished(Q.byId.b1))
+
+expect("every protected call came from a click", outsideClick == 0, outsideClick .. " outside a click")
+expect("never more than one protected call per click", maxPerClick == 1, "max " .. maxPerClick)
+GoldmineTasks = nil
 
 -- Write a sample SavedVariables file for the desktop tool's tests.
 local out = arg[1]
