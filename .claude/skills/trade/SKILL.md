@@ -37,9 +37,12 @@ Pro plan, so make a few big tool calls rather than many small ones.
 
 ## 1. Sync and read state
 
-Run `python3 desktop/goldmine.py sync` from the repo root to upload the latest SavedVariables.
-If it fails, say so; the rest still works on older data. Then gather, in as few calls as
-possible:
+The `goldmine` MCP server is the local client (`goldmine.py mcp`): it forwards the server's tools
+with this computer's API key and adds `sync`, `push` and `client_status`. Call `sync` first: it
+uploads the latest SavedVariables and refreshes the addon's data. Its `saved_variables[].written`
+shows when WoW last wrote them; if that predates the user's last play, ask them to `/reload` and
+sync again. If sync fails, say so; the rest still works on older data. Then gather, in as few
+calls as possible:
 
 - `list_markets`: snapshot freshness for `us-proudmoore` and `us-commodities`. If the last
   snapshot is more than 3h old, warn and lean on `scan` tasks.
@@ -140,8 +143,8 @@ and publish again under a new id. Never loosen an exit or a floor just to get pa
 For each new position, `journal_write` a `hypothesis` with the strategy, items and
 `prediction: {buy, sell, days, realized_expected}`, with evidence pointing at the plan id.
 
-Then run `python3 desktop/goldmine.py push` so `Tasks.lua` lands in the addon, and tell the user
-to `/reload` (or log in) and open `/goldmine tasks`.
+Then call `push` so `Tasks.lua` lands in the addon, and tell the user to `/reload` (or log in) and
+open `/goldmine tasks`.
 
 ## 8. Tell the user (short)
 

@@ -15,6 +15,7 @@ Goldmine app) up to date. Goldmine.app runs it for all of that; it works on its 
   goldmine.py timing "Linen Cloth"      # when an item sells: hour-of-week heatmap (local time)
   goldmine.py export gold.csv --since 30d   # your ledger as CSV
   goldmine.py addon status | install    # install or update the addon from the server
+  goldmine.py mcp                       # MCP server (stdio) for assistants: the server's tools plus sync/push
 
 Config: ~/.goldmine/config.toml, `[server]` with `url = "https://your.server"` and `key = "gm_..."`
 (generate the key on the server's Clients page). --server overrides the address and the
@@ -40,6 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import addon  # noqa: E402
+import mcp_bridge  # noqa: E402
 import remote  # noqa: E402
 
 DEFAULT_WOW_DIRS = [
@@ -472,6 +474,11 @@ def release_app_cmd(args) -> int:
     return 0
 
 
+def mcp_cmd(args) -> int:
+    """Serve MCP on stdin/stdout: the server's tools through this client's key, plus local sync/push."""
+    return mcp_bridge.serve(sys.modules[__name__], args)
+
+
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -577,6 +584,10 @@ def main(argv=None) -> int:
     p.add_argument("--platform", default=APP_PLATFORM)
     p.add_argument("--notes", default="", help="release notes shown in the app")
     p.set_defaults(fn=release_app_cmd)
+
+    p = sub.add_parser("mcp", help="MCP server (stdio) for assistants: the server's tools plus sync, push, status")
+    add_wow(p)
+    p.set_defaults(fn=mcp_cmd)
 
     args = ap.parse_args(argv)
     try:

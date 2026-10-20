@@ -38,6 +38,7 @@ desktop/          the client, a thin layer over the server's API (Python 3.11+, 
   goldmine.py     CLI: sync, watch, push, reports, export, addon install, app updates
   addon.py        installs/updates the addon in WoW's AddOns folders
   remote.py       HTTP client for the server
+  mcp_bridge.py   `goldmine.py mcp`: local MCP server (stdio) forwarding the server's tools, plus sync/push
 app/              Goldmine.app: macOS menu bar app (SwiftUI) around the client
 addon/tests/      offline test harness with a mocked WoW API (runs on lua and luajit)
 ```
@@ -347,12 +348,19 @@ and MCP tools and nothing else (no uploads, ledger or exports). Access tokens la
 for 30 days; revoking the connector on the Clients page cuts it off immediately. There's no dynamic
 client registration, so only connectors you create can ask you to sign in.
 
-**Claude Code.** Use an API key as a header (create a dedicated one, e.g. "Claude Code", so you
-can revoke it separately):
+**Claude Code.** Run the desktop client as a local MCP server. It uses the client's own
+connection (`[server] url` and `key` in `~/.goldmine/config.toml`), forwards every server tool,
+and adds the tools only this computer can run: `sync` (upload SavedVariables, then refresh
+Data.lua and Tasks.lua), `push` (refresh the addon's Data.lua and Tasks.lua) and
+`client_status` (the server, SavedVariables and when WoW last wrote them, installed addon
+copies, whether WoW is running). No key goes into Claude's config:
 
 ```bash
-claude mcp add --transport http --scope user goldmine https://gold.example.com/api/v1/mcp --header "Authorization: Bearer gm_…"
+claude mcp add --scope user goldmine -- python3 /path/to/goldmine/desktop/goldmine.py mcp
 ```
+
+The server's HTTP endpoint still works directly (`claude mcp add --transport http ... --header
+"Authorization: Bearer gm_…"`), but then there's no sync or push.
 
 Your own account state, as the addon last saw it, is also there (MCP only; every tool is
 read-only, see `docs/trader.md`):

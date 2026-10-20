@@ -44,6 +44,7 @@ class StubServer:
     def __init__(self):
         self.addon_zip = zip_addon(REPO_ADDON)
         self.uploads = []
+        self.mcp_calls = []
         self.tasks_lua = b"GoldmineTasks = { generated = 1, tasks = {} }\n"  # None: a server without the queue
         stub = self
 
@@ -91,6 +92,16 @@ class StubServer:
                 if not self.authed():
                     return
                 body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path == "/api/v1/mcp":
+                    msg = json.loads(body)
+                    stub.mcp_calls.append(msg)
+                    result = {"initialize": {"instructions": "stub server"},
+                              "tools/list": {"tools": [{"name": "list_markets"}, {"name": "sync"}]},
+                              "tools/call": {"content": [{"type": "text", "text": "echo"}],
+                                             "structuredContent": msg["params"]}}.get(msg["method"])
+                    self.send(200, {"jsonrpc": "2.0", "id": msg["id"], "result": result} if result is not None
+                              else {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "nope"}})
+                    return
                 stub.uploads.append(gzip.decompress(body))
                 self.send(200, {"new": 3, "total": 5})
 
@@ -231,6 +242,58 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("3 new of 5 entries", out)
         self.assertEqual(self.server.uploads[-1], b"GoldmineDB = {}")
+
+    def mcp(self, *msgs, server=True) -> list[dict]:
+        """Run `goldmine.py mcp` over these JSON-RPC messages -> its replies."""
+        import unittest.mock as mock
+        stdin = io.StringIO("".join(json.dumps(m) + "\n" for m in msgs) + "not json\n")
+        stdout = io.StringIO()
+        pre = ["--config", self.config] + (["--server", self.server.url] if server else [])
+        with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stdout", stdout), \
+                mock.patch.dict(os.environ, {"GOLDMINE_KEY": KEY}):
+            self.assertEqual(goldmine.main([*pre, "mcp", *self.wow_args()]), 0)
+        return [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    def test_mcp_forwards_server_tools_and_adds_local_ones(self):
+        self.cli("addon", "install", "--flavor", "_retail_", *self.wow_args())
+        sv = self.wow / "_retail_" / "WTF" / "Account" / "ACCT" / "SavedVariables"
+        sv.mkdir(parents=True)
+        (sv / "Goldmine.lua").write_text("GoldmineDB = { log = {} }")
+        call = lambda i, name, **a: {"jsonrpc": "2.0", "id": i, "method": "tools/call",  # noqa: E731
+                                     "params": {"name": name, "arguments": a}}
+        init, listed, fwd, status, sync, push, unknown, parse_err = self.mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            call(3, "list_markets"), call(4, "client_status"), call(5, "sync"), call(6, "push"),
+            {"jsonrpc": "2.0", "id": 7, "method": "resources/list"})
+        self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
+        self.assertTrue(init["result"]["instructions"].startswith("stub server "))
+        names = [t["name"] for t in listed["result"]["tools"]]
+        self.assertEqual(names, ["sync", "push", "client_status", "list_markets"])  # the local sync wins
+        self.assertEqual(fwd["result"]["structuredContent"], {"name": "list_markets", "arguments": {}})
+        st = status["result"]["structuredContent"]
+        self.assertEqual((st["server"], st["me"]["user"], len(st["saved_variables"])), (self.server.url, "snow", 1))
+        self.assertTrue(st["addon"])
+        self.assertTrue(sync["result"]["structuredContent"]["ok"], sync)
+        self.assertIn("3 new of 5 entries", sync["result"]["structuredContent"]["output"])
+        self.assertEqual(self.server.uploads[-1], b"GoldmineDB = { log = {} }")
+        self.assertTrue((self.dest() / "Tasks.lua").exists())
+        self.assertTrue(push["result"]["structuredContent"]["ok"])
+        self.assertEqual(unknown["error"]["code"], -32601)
+        self.assertEqual(parse_err["error"]["code"], -32700)
+        self.assertEqual({m["method"] for m in self.server.mcp_calls}, {"initialize", "tools/list", "tools/call"})
+
+    def test_mcp_without_a_server_still_answers(self):
+        init, listed, fwd = self.mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_plan", "arguments": {}}},
+            server=False)[:3]
+        self.assertEqual(init["result"]["serverInfo"]["name"], "goldmine")
+        self.assertEqual([t["name"] for t in listed["result"]["tools"]], ["sync", "push", "client_status"])
+        self.assertTrue(fwd["result"]["isError"])
+        self.assertIn("no Goldmine server configured", fwd["result"]["content"][0]["text"])
 
     def test_export_passes_filters(self):
         out_path = Path(self.tmp.name) / "out.csv"
