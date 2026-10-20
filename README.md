@@ -7,7 +7,8 @@ export to CSV.
 ```
 addon/Goldmine/
   Goldmine.lua    money ledger: every gold change + its source
-  Market.lua      records AH prices you browse, your recipes, bags/bank/warband contents
+  Market.lua      records AH prices you browse, your recipes (+ crafting operation info) and craft
+                  results, bags/bank/warband contents and warband gold, your own auctions
   Advice.lua      price tooltips, /goldmine crafts, /goldmine deals (from Data.lua)
   Data.lua        downloaded from the server by `goldmine.py push` (not in git; the addon works without it)
 server/           Goldmine server (Docker): does all the work and stores everything
@@ -19,6 +20,8 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     store.py      change-based AH storage (listing lifecycles + item states written on change)
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
     marketdata.py read-only market data as JSON (/api/v1/market/*)
+    account.py    read-only account state for the trader: balances, inventory, owned auctions,
+                  ledger, recipes, crafts, WoW token price, item metadata (MCP only)
     mcp_server.py the same as MCP tools for assistants (/api/v1/mcp)
     svparse.py    SavedVariables (Lua table) parser
     releases.py   addon + app updates for clients
@@ -230,6 +233,10 @@ The tests run against a mock, so these need checking in the real client
 - Which `Enum.PlayerInteractionType` values exist, and whether the hooked functions
   (`SendMail`, `TakeTaxiNode`, `C_AuctionHouse.*`, `C_Bank.*`) exist. Missing ones are
   skipped safely; they just fall back to window-based labels.
+- Owned auctions: that `buyoutAmount` is per unit for commodities (the import assumes so), and
+  `C_TradeSkillUI.GetCraftingOperationInfo(recipeID, {}, nil, false)` / the
+  `TRADE_SKILL_ITEM_CRAFTED_RESULT` payload fields (`multicraft`, `resourcesReturned`,
+  `concentrationSpent`) match what Market.lua reads.
 - Whether `GetRepairAllCost()` still returns the cost immediately after `RepairAllItems()`.
   If not, repairs are still labeled correctly, just matched by sign instead of amount.
 
@@ -291,6 +298,24 @@ page, e.g. "Claude", so you can revoke it separately):
 ```bash
 claude mcp add --transport http --scope user goldmine https://gold.example.com/api/v1/mcp --header "Authorization: Bearer gm_…"
 ```
+
+Your own account state, as the addon last saw it, is also there (MCP only; every tool is
+read-only, see `docs/trader.md`):
+
+| MCP tool | |
+|---|---|
+| `get_account` | gold per character and in the warband bank, `total_gold`, last-seen times (character, bags, bank, auctions, professions), latest WoW token price |
+| `get_inventory` | items in bags/bank/warband: total `count` and `held` by owner and location (`char`, `location`, `items` filters) |
+| `get_owned_auctions` | your auctions from each character's latest Auctions-tab list: unit price, quantity, active/sold, time left; `include_ended` adds ones that dropped off the list |
+| `get_ledger` | gold changes newest first, with per-source totals (`since`/`until` as unix seconds, `7d`, or a date; `source`, `item`, `char`) |
+| `get_recipes` | known recipes, reagents, and crafting operation info (skill vs difficulty, expected quality, multicraft/resourcefulness %, concentration cost), and concentration per profession |
+| `get_craft_results` | crafts made (quality, multicraft, resources returned, concentration) and per-recipe proc rates |
+| `get_token_price` | WoW token price, latest and history (a row per change, collected with the AH snapshots) |
+| `get_item_info` | vendor sell/buy price, binding (`bound`), stack size, class, expansion: Blizzard's item API (cached by the collector for items you own or craft) plus what the game client reported |
+
+The addon sends no AH queries for this: owned auctions come from the list the Auctions tab
+requests. To have it request that list itself whenever the AH opens, run
+`/run GoldmineDB.settings.queryOwnedAuctions = true` once (default off).
 
 `claude mcp get goldmine` should say "Connected". `--scope user` makes it available in every
 project; leave it out to register it for the current folder only. Keep the key out of shared

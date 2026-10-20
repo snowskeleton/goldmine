@@ -86,6 +86,87 @@ CREATE TABLE IF NOT EXISTS inventory (
     updated   INTEGER,
     PRIMARY KEY (owner, location, item_id)
 );
+-- Account state for the trader (Market.lua): see docs/trader.md.
+CREATE TABLE IF NOT EXISTS recipe_ops (   -- crafting operation info, basic reagents, no concentration
+    char_key            TEXT NOT NULL,
+    recipe_id           INTEGER NOT NULL,
+    base_skill          INTEGER,
+    bonus_skill         INTEGER,
+    difficulty          INTEGER,
+    bonus_difficulty    INTEGER,
+    quality             INTEGER,          -- expected crafting quality (tier)
+    quality_id          INTEGER,
+    lower_skill         INTEGER,          -- skill thresholds of the expected tier
+    upper_skill         INTEGER,
+    quality_craft       INTEGER,
+    concentration_cost  INTEGER,
+    ingenuity_refund    INTEGER,
+    multicraft          REAL,             -- percent
+    resourcefulness     REAL,             -- percent
+    stats               TEXT,             -- JSON {bonus stat name: percent}
+    updated             INTEGER,
+    PRIMARY KEY (char_key, recipe_id)
+);
+CREATE TABLE IF NOT EXISTS professions (
+    char_key           TEXT NOT NULL,
+    profession         TEXT NOT NULL,
+    scanned            INTEGER,
+    concentration      INTEGER,
+    concentration_max  INTEGER,
+    PRIMARY KEY (char_key, profession)
+);
+CREATE TABLE IF NOT EXISTS craft_results (
+    id             TEXT PRIMARY KEY,      -- Name-Realm:cN
+    char_key       TEXT NOT NULL,
+    ts             INTEGER NOT NULL,
+    recipe_id      INTEGER,
+    item_id        INTEGER,
+    quantity       INTEGER,
+    quality        INTEGER,
+    multicraft     INTEGER,               -- extra items from a multicraft proc (0 = none)
+    concentration  INTEGER,               -- concentration spent
+    ingenuity      INTEGER,               -- 1 = ingenuity proc
+    returned       TEXT,                  -- JSON [[item_id, quantity], ...] from resourcefulness
+    operation_id   INTEGER
+);
+CREATE INDEX IF NOT EXISTS craft_results_ts ON craft_results(ts);
+CREATE TABLE IF NOT EXISTS owned_auctions (
+    auction_id   INTEGER PRIMARY KEY,
+    char_key     TEXT NOT NULL,
+    item_id      INTEGER NOT NULL,
+    variant      INTEGER NOT NULL DEFAULT 0,
+    item_level   INTEGER,
+    quantity     INTEGER NOT NULL,
+    buyout       INTEGER,                 -- as the AH reports it: per unit for commodities
+    bid          INTEGER,
+    unit_price   INTEGER,                 -- copper per unit
+    commodity    INTEGER,
+    time_left    INTEGER,                 -- seconds, as of last_seen
+    status       INTEGER,                 -- Enum.AuctionStatus: 0 active, 1 sold
+    first_seen   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS owned_auction_lists (  -- when each character's list was last seen
+    char_key  TEXT PRIMARY KEY,
+    ts        INTEGER NOT NULL,
+    count     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS warband_money (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    money    INTEGER NOT NULL,            -- copper
+    updated  INTEGER NOT NULL,
+    seen_by  TEXT
+);
+CREATE TABLE IF NOT EXISTS item_meta (    -- from the game client's GetItemInfo
+    item_id      INTEGER PRIMARY KEY,
+    stack_size   INTEGER,
+    sell_price   INTEGER,
+    class_id     INTEGER,
+    subclass_id  INTEGER,
+    bind_type    INTEGER,                 -- Enum.ItemBind: 0 none, 1 on pickup, 2 on equip, 3 on use, ...
+    expansion    INTEGER,                 -- 0 classic ... 10 The War Within, 11 Midnight
+    updated      INTEGER
+);
 DROP VIEW IF EXISTS transactions_view;
 CREATE VIEW transactions_view AS
 SELECT id, char_key AS character,
@@ -224,25 +305,86 @@ def import_market_data(conn: sqlite3.Connection, data: dict, chars: dict) -> Non
     for key, c in chars.items():
         for prof, pdata in _as_dict(c.get("professions")).items():
             recipes = _as_dict(pdata.get("recipes"))
-            conn.execute("""DELETE FROM recipe_reagents WHERE char_key = ? AND recipe_id IN
-                            (SELECT recipe_id FROM recipes WHERE char_key = ? AND profession = ?)""", (key, key, prof))
+            for table in ("recipe_reagents", "recipe_ops"):
+                conn.execute(f"""DELETE FROM {table} WHERE char_key = ? AND recipe_id IN
+                                 (SELECT recipe_id FROM recipes WHERE char_key = ? AND profession = ?)""",
+                             (key, key, prof))
             conn.execute("DELETE FROM recipes WHERE char_key = ? AND profession = ?", (key, prof))
             for rid, r in recipes.items():
                 conn.execute("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?, ?, ?)",
                              (key, int(rid), prof, r.get("n"), r.get("o"), r.get("q")))
                 conn.executemany("INSERT INTO recipe_reagents VALUES (?, ?, ?, ?)",
                                  [(key, int(rid), item, qty) for item, qty in _pairs(r.get("r"), 2)])
+                if isinstance(r.get("op"), dict):
+                    _import_op(conn, key, int(rid), r["op"], pdata.get("t"))
+            conc = pdata.get("conc") or {}
+            conn.execute("INSERT OR REPLACE INTO professions VALUES (?, ?, ?, ?, ?)",
+                         (key, prof, pdata.get("t"), conc.get("q"), conc.get("max")))
         inv = c.get("inventory") or {}
         for loc in ("bags", "bank"):
             if loc in inv:
                 conn.execute("DELETE FROM inventory WHERE owner = ? AND location = ?", (key, loc))
                 conn.executemany("INSERT INTO inventory VALUES (?, ?, ?, ?, ?)",
                                  [(key, loc, int(i), n, inv.get(loc + "At")) for i, n in _as_dict(inv[loc]).items()])
+        if isinstance(c.get("auctions"), dict):
+            _import_owned_auctions(conn, key, c["auctions"])
     warband = data.get("warband")
     if warband:
         conn.execute("DELETE FROM inventory WHERE owner = 'warband'")
         conn.executemany("INSERT INTO inventory VALUES ('warband', 'warband', ?, ?, ?)",
                          [(int(i), n, warband.get("t")) for i, n in _as_dict(warband.get("items")).items()])
+    money = data.get("warbandMoney")
+    if isinstance(money, dict) and money.get("m") is not None:
+        conn.execute("""INSERT INTO warband_money VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+                          money=excluded.money, updated=excluded.updated, seen_by=excluded.seen_by
+                        WHERE excluded.updated >= warband_money.updated""",
+                     (money["m"], money.get("t") or 0, money.get("by")))
+    for craft in data.get("crafts") or []:
+        conn.execute("INSERT OR IGNORE INTO craft_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (craft["id"], craft["c"], craft["t"], craft.get("r"), craft.get("item"), craft.get("q"),
+                      craft.get("ql"), craft.get("mc") or 0, craft.get("cs") or 0, 1 if craft.get("ing") else 0,
+                      json.dumps(_pairs(craft.get("rs"), 2)), craft.get("op")))
+    for item_id, m in _as_dict(data.get("itemInfo")).items():
+        if isinstance(m, dict):
+            conn.execute("INSERT OR REPLACE INTO item_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (int(item_id), m.get("s"), m.get("v"), m.get("c"), m.get("sc"), m.get("b"), m.get("x"),
+                          m.get("t")))
+
+
+def _import_op(conn, key: str, recipe_id: int, op: dict, updated) -> None:
+    stats = op.get("stats") if isinstance(op.get("stats"), dict) else {}
+    conn.execute("INSERT OR REPLACE INTO recipe_ops VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (key, recipe_id, op.get("sk"), op.get("bsk"), op.get("df"), op.get("bdf"), op.get("ql"),
+                  op.get("qid"), op.get("lo"), op.get("hi"), 1 if op.get("qc") else 0, op.get("cc"), op.get("ing"),
+                  stats.get("Multicraft"), stats.get("Resourcefulness"),
+                  json.dumps(stats, ensure_ascii=False), updated))
+
+
+def _import_owned_auctions(conn, key: str, snap: dict) -> None:
+    """One character's owned-auction list. Auctions are upserted by id (first/last seen), and
+    owned_auction_lists says which list is the latest, so a vanished auction drops out of it."""
+    ts = snap.get("t") or 0
+    row = conn.execute("SELECT ts FROM owned_auction_lists WHERE char_key = ?", (key,)).fetchone()
+    latest = row is None or ts >= row[0]
+    auctions = snap.get("list") or []
+    for a in auctions:
+        qty = a.get("q") or 1
+        buyout = a.get("b")
+        unit = buyout if a.get("cm") == 1 or buyout is None else buyout // max(qty, 1)
+        conn.execute("""INSERT INTO owned_auctions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(auction_id) DO UPDATE SET
+                          first_seen=MIN(owned_auctions.first_seen, excluded.first_seen),
+                          last_seen=MAX(owned_auctions.last_seen, excluded.last_seen),
+                          quantity=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                        THEN excluded.quantity ELSE owned_auctions.quantity END,
+                          time_left=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                         THEN excluded.time_left ELSE owned_auctions.time_left END,
+                          status=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                      THEN excluded.status ELSE owned_auctions.status END""",
+                     (a["id"], key, a["item"], a.get("v") or 0, a.get("il"), qty, buyout, a.get("bid"), unit,
+                      a.get("cm"), a.get("tl"), a.get("st"), ts, ts))
+    if latest:
+        conn.execute("INSERT OR REPLACE INTO owned_auction_lists VALUES (?, ?, ?)", (key, ts, len(auctions)))
 
 
 def dump_toml(cfg: dict) -> str:

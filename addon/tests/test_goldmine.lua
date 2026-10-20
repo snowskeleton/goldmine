@@ -285,7 +285,19 @@ C_TradeSkillUI = {
             { reagentType = 2, quantityRequired = 1, reagents = { { itemID = 999 } } }, -- optional, skipped
         } }
     end,
+    GetCraftingOperationInfo = function(id, reagents, guid, conc)
+        assert(type(reagents) == "table" and conc == false)
+        return { recipeID = id, baseSkill = 80, bonusSkill = 5, baseDifficulty = 100, bonusDifficulty = 0,
+                 craftingQuality = 2, craftingQualityID = 2, isQualityCraft = true, concentrationCost = 30,
+                 lowerSkillThreshold = 75, upperSkillThreshold = 125, ingenuityRefund = 15,
+                 bonusStats = { { bonusStatName = "Multicraft", bonusStatValue = 120, ratingPct = 12.5 },
+                                { bonusStatName = "Resourcefulness", bonusStatValue = 90, ratingPct = 9 } } }
+    end,
+    GetProfessionChildSkillLineID = function() return 2915 end,
+    GetConcentrationCurrencyID = function() return 3040 end,
+    CraftRecipe = function() end,
 }
+C_CurrencyInfo = { GetCurrencyInfo = function(id) return id == 3040 and { quantity = 640, maxQuantity = 1000 } end }
 fire("TRADE_SKILL_SHOW")
 fire("TRADE_SKILL_LIST_UPDATE")
 advance(2)
@@ -293,6 +305,20 @@ local tailoring = GoldmineDB.chars["Snow-Testrealm"].professions.Tailoring
 expect("learned recipe recorded", tailoring.recipes[100].o == 2996 and tailoring.recipes[100].r[1] == 2589
     and tailoring.recipes[100].r[2] == 2 and #tailoring.recipes[100].r == 2)
 expect("unlearned recipe skipped", tailoring.recipes[101] == nil)
+local op = tailoring.recipes[100].op
+expect("operation info recorded", op and op.sk == 80 and op.df == 100 and op.ql == 2 and op.cc == 30
+    and op.stats.Multicraft == 12.5 and op.stats.Resourcefulness == 9)
+expect("concentration recorded", tailoring.conc and tailoring.conc.q == 640 and tailoring.conc.max == 1000)
+
+-- A craft: the recipe comes from the hooked CraftRecipe call when the result doesn't carry it.
+C_TradeSkillUI.CraftRecipe(100, 1)
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { itemID = 2996, quantity = 2, multicraft = 1, craftingQuality = 3,
+    concentrationSpent = 30, resourcesReturned = { { itemID = 2589, quantity = 1 } }, operationID = 77 })
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", "not a table")
+local craft = GoldmineDB.crafts and GoldmineDB.crafts[1]
+expect("craft result recorded", craft and #GoldmineDB.crafts == 1 and craft.r == 100 and craft.q == 2
+    and craft.mc == 1 and craft.ql == 3 and craft.cs == 30 and craft.rs[1] == 2589 and craft.rs[2] == 1
+    and craft.id == "Snow-Testrealm:c1")
 
 Enum.BagIndex = { Backpack = 0, Bag_1 = 1, ReagentBag = 5, CharacterBankTab_1 = 6, AccountBankTab_1 = 12 }
 Enum.PlayerInteractionType.Banker = 8
@@ -304,6 +330,18 @@ local containers = {
 }
 C_Container.GetContainerNumSlots = function(bag) return containers[bag] and #containers[bag] or 0 end
 C_Container.GetContainerItemInfo = function(bag, slot) return containers[bag] and containers[bag][slot] end
+local itemInfoCalls = 0
+C_Item = { GetItemInfo = function(id)
+    itemInfoCalls = itemInfoCalls + 1
+    if id == 2592 then return nil end -- not cached by the client yet
+    -- name, link, quality, ilvl, minLevel, type, subType, stackCount, equipLoc, texture, sellPrice,
+    -- classID, subclassID, bindType, expansionID
+    return "Item " .. id, nil, 1, 1, 0, "Tradeskill", "Cloth", 200, "", 0, 10, 7, 5, 0, 0
+end }
+Enum.BankType = { Character = 0, Guild = 1, Account = 2 }
+C_Bank = C_Bank or {}
+local deposited = 1234567
+C_Bank.FetchDepositedMoney = function(kind) return kind == 2 and deposited or 0 end
 fire("BAG_UPDATE_DELAYED")
 advance(3)
 local inv = GoldmineDB.chars["Snow-Testrealm"].inventory
@@ -311,7 +349,41 @@ expect("bags counted (incl. reagent bag)", inv.bags[2589] == 25 and inv.bags[259
 fire("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", 8)
 advance(1)
 expect("bank and warband counted", inv.bank[2996] == 7 and GoldmineDB.warband.items[4306] == 50)
+expect("warband gold read while the bank is open", GoldmineDB.warbandMoney.m == 1234567
+    and GoldmineDB.warbandMoney.by == "Snow-Testrealm")
+deposited = 2000000
+fire("ACCOUNT_MONEY")
+expect("warband gold follows deposits", GoldmineDB.warbandMoney.m == 2000000)
 fire("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 8)
+local ii = GoldmineDB.itemInfo
+expect("item info noted once per item", ii[2589].s == 200 and ii[2589].v == 10 and ii[2589].c == 7
+    and ii[2592] == nil and ii[4306] ~= nil)
+local calls = itemInfoCalls
+fire("BAG_UPDATE_DELAYED")
+advance(3)
+expect("known items aren't looked up again", itemInfoCalls - calls == 1, itemInfoCalls - calls) -- just 2592
+
+-- Owned auctions: recorded from the event the Auctions tab triggers; no query unless opted in.
+local queried = 0
+C_AuctionHouse.QueryOwnedAuctions = function() queried = queried + 1 end
+C_AuctionHouse.GetNumOwnedAuctions = function() return 2 end
+C_AuctionHouse.GetOwnedAuctionInfo = function(i)
+    return ({ { auctionID = 501, itemKey = { itemID = 2589, itemLevel = 5 }, quantity = 40, buyoutAmount = 18,
+                timeLeftSeconds = 86000, status = 0 },
+              { auctionID = 502, itemKey = { itemID = 2996, itemLevel = 10 }, quantity = 1, buyoutAmount = 5000,
+                bidAmount = 4000, timeLeftSeconds = 3600, status = 1 } })[i]
+end
+C_AuctionHouse.GetItemKeyInfo = function(key) return { isCommodity = key.itemID == 2589 } end
+fire("AUCTION_HOUSE_SHOW")
+expect("no owned-auction query by default", queried == 0)
+GoldmineDB.settings.queryOwnedAuctions = true
+fire("AUCTION_HOUSE_SHOW")
+expect("owned-auction query when opted in", queried == 1)
+GoldmineDB.settings.queryOwnedAuctions = nil
+fire("OWNER_AUCTIONS_UPDATED")
+local owned = GoldmineDB.chars["Snow-Testrealm"].auctions
+expect("owned auctions recorded", #owned.list == 2 and owned.list[1].id == 501 and owned.list[1].cm == 1
+    and owned.list[1].b == 18 and owned.list[2].cm == 0 and owned.list[2].st == 1 and owned.list[2].tl == 3600)
 
 ---------------------------------------------------------------------------
 -- Advice.lua: tooltips and commands from pushed Data.lua
