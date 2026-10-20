@@ -198,8 +198,11 @@ class MarketDataTests(unittest.TestCase):
         tools = {t["name"]: t for t in self.rpc("tools/list").json()["result"]["tools"]}
         self.assertEqual(set(tools), {"list_markets", "search_items", "get_current_prices", "get_price_history",
                                       "get_market_values", "get_deals", "get_crafts",
-                                      "publish_plan", "get_plan", "get_task_results"})
-        self.assertTrue(all(t["annotations"]["readOnlyHint"] for n, t in tools.items() if n != "publish_plan"))
+                                      "publish_plan", "get_plan", "get_task_results",
+                                      "backtest", "evaluate_plan", "get_lots", "get_scorecard",
+                                      "journal_write", "journal_read"})
+        self.assertEqual({n for n, t in tools.items() if not t["annotations"]["readOnlyHint"]},
+                         {"publish_plan", "journal_write"})
         res = self.rpc("tools/call", {"name": "get_price_history", "arguments": {
             "market": "us-testrealm", "item": "Linen Cloth", "since": T0, "resolution": "raw"}}).json()["result"]
         self.assertNotIn("isError", res)
@@ -218,6 +221,31 @@ class MarketDataTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 7, "method": "ping"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}])
         self.assertEqual(batch.json(), [{"jsonrpc": "2.0", "id": 7, "result": {}}])
         self.assertEqual(self.api.get("/api/v1/mcp", headers=self.h).status_code, 405)
+
+    def test_mcp_learning_tools(self):
+        call = lambda name, args: self.rpc("tools/call", {"name": name, "arguments": args}).json()["result"]  # noqa: E731
+        res = call("journal_write", {"kind": "lesson", "text": "wool deals sell", "items": [WOOL],
+                                     "evidence": ["bt:bt-0123"]})
+        self.assertNotIn("isError", res)
+        entry = res["structuredContent"]["entry"]
+        read = call("journal_read", {"item": WOOL})["structuredContent"]
+        self.assertEqual([e["id"] for e in read["entries"]], [entry["id"]])
+        self.assertTrue(call("journal_write", {"kind": "rumor", "text": "x"})["isError"])
+        plan = {"plan": "p1", "created": T0, "tasks": [{"id": "t1", "kind": "buy", "item": WOOL, "qty": 1,
+                                                         "max_unit": 50}]}
+        mk = {"markets": ["us-testrealm"]}
+        ev = call("evaluate_plan", {"plan": plan, "inventory": {}, "params": mk})["structuredContent"]
+        self.assertEqual(ev["tasks"][0]["status"], "skipped")   # only 100c wool until T3
+        plan["created"] = T0 + 2 * HOUR
+        ev = call("evaluate_plan", {"plan": plan, "inventory": {}, "params": mk})["structuredContent"]
+        self.assertEqual((ev["tasks"][0]["status"], ev["tasks"][0]["paid"]), ("done", 20))
+        bt = call("backtest", {"strategy": "deals", "params": {"markets": ["us-testrealm"]}})
+        self.assertNotIn("isError", bt)
+        self.assertEqual(bt["structuredContent"]["strategy"], "deals")
+        self.assertTrue(call("backtest", {"strategy": "deals", "params": {"nope": 1}})["isError"])
+        lots = call("get_lots", {})["structuredContent"]
+        self.assertEqual(lots["open_lots"], [])
+        self.assertEqual(call("get_scorecard", {})["structuredContent"]["strategies"], [])
 
     def test_zz_nothing_was_written(self):
         self.assertEqual(digest(self.db), self.before)

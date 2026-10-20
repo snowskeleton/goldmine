@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, db, marketdata as md, tasks
+from . import auth, db, journal, ledger, lots, marketdata as md, sim, tasks
 from .auth import User
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -46,6 +46,73 @@ def _tool(name, title, description, properties, required, fn, user_db=False, rea
             "inputSchema": {"type": "object", "properties": properties, "required": required,
                             "additionalProperties": False},
             "annotations": {"readOnlyHint": read_only, "openWorldHint": False}}
+
+_realm = {"type": "string", "description": "Only characters on this realm, e.g. Proudmoore (default: all)"}
+_tags = {"type": "object", "description": "Strategy tags until task results carry them: {lot ref (buy transaction "
+         "id) or item id: tag, or {strategy, max_hold_days}}. Default untagged."}
+_hold = {"type": "number", "minimum": 0, "default": 7, "description": "Default max hold days for lots"}
+_params = {"type": "object", "description": "Overrides; unknown keys are rejected and the error lists the allowed ones"}
+
+# Learning (sim.py, lots.py, journal.py): backtests, paper-plan scoring, cost basis, journal.
+LEARNING_TOOLS = [
+    _tool("backtest", "Backtest a strategy",
+          "Replay a built-in strategy over stored history: at each decision time (params.decision_hours_utc, default "
+          "13h and 1h UTC) it builds the plan the strategy would have published from data up to then and fills it "
+          "conservatively (buys only from listings present at <= max_unit in the next snapshot; posts only from later "
+          "definite purchases at >= our price; 5% cut, deposits, expiries). Strategies: flip (commodity p25->p75 "
+          "round trips), deals (listings <= 70% of market value), craft (your recipes, reagents at p10). Returns "
+          "realized P&L, ROI, capital used, max drawdown, sell-through, days held, unsold inventory at conservative "
+          "value, per-item results and a sample plan. backtest_id can be cited as evidence (bt:<id>).",
+          {"strategy": {"type": "string", "enum": list(sim.STRATEGIES)}, "params": _params,
+           "since": {"type": "integer", "description": "Unix seconds (default: until - 30 days)"},
+           "until": {"type": "integer", "description": "Unix seconds (default: latest snapshot)"}},
+          ["strategy"], lambda conn, strategy, **kw: sim.backtest(conn, strategy, **kw), user_db=True),
+    _tool("evaluate_plan", "Score a plan",
+          "Score a plan in the Tasks.lua format (an object with tasks: buy/post/craft/cancel...) against what "
+          "actually happened after start_ts (default plan.created): what each task would have filled, sold, expired "
+          "and earned after fees, with the same fill model as backtest. Items posted or crafted from that the plan "
+          "didn't buy come from `inventory` (default: your synced counts) at cost_basis or conservative value.",
+          {"plan": {"type": "object"}, "start_ts": {"type": "integer"},
+           "horizon_hours": {"type": "number", "minimum": 1, "maximum": 720, "default": 72},
+           "inventory": {"type": "object", "description": "{item id: count} held at start"},
+           "cost_basis": {"type": "object", "description": "{item id: copper per unit} for held inventory"},
+           "params": _params},
+          ["plan"], lambda conn, plan, **kw: sim.evaluate_plan(conn, plan, **kw), user_db=True),
+    _tool("get_lots", "Cost-basis lots",
+          "FIFO lots from your AH ledger: open lots at cost and at conservative value (min(market value, p25 of "
+          "definite sales over 14d) x 0.95 - a deposit; 0 with no sales; halved past max hold), days held, realized "
+          "P&L per item, deposit/cancel fees, purchases and sales that couldn't be matched to an item or lot.",
+          {"realm": _realm, "tags": _tags, "max_hold_days": _hold},
+          [], lambda conn, **kw: lots.get_lots(conn, **kw), user_db=True),
+    _tool("get_scorecard", "Scorecard",
+          "Per strategy tag: realized P&L, ROI, sell-through, days held, open exposure at cost and conservative value; "
+          "weekly realized gold growth (AH cash flow); prediction error of journal hypotheses with "
+          "prediction.realized.",
+          {"realm": _realm, "tags": _tags, "max_hold_days": _hold},
+          [], lambda conn, **kw: lots.get_scorecard(conn, **kw), user_db=True),
+    _tool("journal_write", "Write journal entry",
+          "Record a hypothesis (strategy, items, prediction such as {\"realized\": copper, \"days\": 3}), decision, "
+          "lesson or note. evidence: refs like task:<plan>:<task>, plan:<id>, tx:<transaction id>, bt:<backtest id>, "
+          "journal:<id>. supersedes: id of an entry this one replaces. expires_at: unix seconds after which a "
+          "lesson stops applying.",
+          {"kind": {"type": "string", "enum": list(journal.KINDS)}, "text": {"type": "string"},
+           "strategy": {"type": "string"}, "items": {"type": "array", "items": {"type": "integer"}},
+           "prediction": {"type": "object"}, "evidence": {"type": "array", "items": {"type": "string"}},
+           "expires_at": {"type": "integer"}, "supersedes": {"type": "integer"}},
+          ["kind", "text"], lambda conn, kind, text, **kw: journal.write(conn, kind, text, **kw),
+          user_db=True, read_only=False),
+    _tool("journal_read", "Read journal",
+          "Journal entries, newest first, filtered by kind, strategy, item, created since; expired and superseded "
+          "entries are hidden unless asked for.",
+          {"kind": {"type": "string", "enum": list(journal.KINDS)}, "strategy": {"type": "string"},
+           "item": {"type": "integer"}, "since": {"type": "integer"},
+           "ids": {"type": "array", "items": {"type": "integer"}},
+           "include_expired": {"type": "boolean", "default": False},
+           "include_superseded": {"type": "boolean", "default": False},
+           "limit": {"type": "integer", "minimum": 1, "maximum": journal.MAX_LIMIT, "default": 50},
+           "offset": {"type": "integer", "minimum": 0, "default": 0}},
+          [], lambda conn, **kw: journal.read(conn, **kw), user_db=True),
+]
 
 
 # Task queue (tasks.py): plans the human works through in the addon's queue, and what happened.
@@ -131,6 +198,7 @@ TOOLS = [
           {"hours": _hours, "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 40}},
           [], lambda conn, **kw: md.crafts(conn, **kw), user_db=True),
     *TASK_TOOLS,
+    *LEARNING_TOOLS,
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}
 
@@ -143,10 +211,8 @@ def _call_tool(user: User, name: str, arguments: dict) -> dict:
     unknown = set(arguments) - set(allowed)
     if unknown:
         return _error_result(f"unknown arguments: {', '.join(sorted(unknown))}")
-    if tool["annotations"]["readOnlyHint"]:
-        conn = md.ro_conn(user.id if tool["user_db"] else None)
-    else:
-        conn = db.user_conn(user.id)  # write tools: the user's game DB, writable
+    conn = md.ro_conn(user.id if tool["user_db"] else None) if tool["annotations"]["readOnlyHint"] \
+        else _write_conn(user.id)
     try:
         result = tool["fn"](conn, **arguments)
     except HTTPException as exc:
@@ -159,6 +225,16 @@ def _call_tool(user: User, name: str, arguments: dict) -> dict:
         conn.close()
     return {"content": [{"type": "text", "text": json.dumps(result, separators=(",", ":"))}],
             "structuredContent": result}
+
+
+def _write_conn(user_id: int):
+    """For write tools: market.sqlite still read-only (mode=ro), the user's game DB attached as "u" writable."""
+    conn = md.ro_conn()
+    conn.execute("PRAGMA query_only = 0")
+    path = db.user_db_path(user_id)
+    ledger.connect(str(path)).close()
+    conn.execute("ATTACH DATABASE ? AS u", (str(path),))
+    return conn
 
 
 def _error_result(message: str) -> dict:
