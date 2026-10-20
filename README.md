@@ -18,6 +18,8 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     market.py     Blizzard API client + AH snapshot collector
     store.py      change-based AH storage (listing lifecycles + item states written on change)
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
+    marketdata.py read-only market data as JSON (/api/v1/market/*)
+    mcp_server.py the same as MCP tools for assistants (/api/v1/mcp)
     svparse.py    SavedVariables (Lua table) parser
     releases.py   addon + app updates for clients
     cli.py        admin commands that use the server's API keys (probe, realms)
@@ -258,6 +260,41 @@ docker compose -f server/docker-compose.yml up -d --build      # from the reposi
 - **Export:** `GET /api/v1/export.csv` (what `goldmine.py export` uses). Each user's ledger is
   also a plain SQLite file in `/data/users/<id>/game.sqlite`; its `transactions_view` shows
   amounts in gold, handy for Grafana, Metabase, etc.
+
+### Market data for assistants (JSON API and MCP)
+
+Read-only access to the collected AH data, so an assistant (or a script) can pull live and
+historical prices straight from the server. It opens `market.sqlite` read-only, so it can't
+change anything. Authenticate with a client key from the **Clients** page (`gm_…`, the part
+before `@` in the connection URL) as `Authorization: Bearer gm_…`. Prices are copper per unit;
+times are unix seconds with an ISO 8601 UTC copy (`*_iso`). Lists are capped and paginated
+(`limit`/`offset`, follow `next_offset` until it's `null`).
+
+| `GET /api/v1/market/…` | |
+|---|---|
+| `markets` | every market: name, kind, region, game, realms, snapshot count, first/last snapshot |
+| `items?q=linen` | item search by (partial) name or id; only names the server has cached are searchable (`limit` ≤ 100) |
+| `current?market=us-proudmoore&item=2589&item=Wool Cloth` | latest state: min_price, p10, median, quantity, auctions, depth5/10/25 (≤ 100 items; ids or names, comma-separated works too) |
+| `history?market=…&item=…&since=&until=&resolution=hourly` | the item's state at every snapshot, rebuilt from change-based storage (a state holds until the item's next row); `raw`, `hourly` or `daily` (UTC buckets: lowest min, mean p10/median/quantity, summed sold/gone, `close_*`). Default window 7 days, at most 90; ≤ 1000 rows per page |
+| `values?market=…[&item=…]&hours=72` | the price model: market value, current min/p10, buy, sell, sold/day; without `item`, every item busiest first (`min_sold`, paged) |
+| `deals?market=…&max_ratio=0.7&min_sold=1` | listed well below market value and actually selling |
+| `crafts?hours=72` | your craft report (recipes your characters know), per realm |
+
+`values` and `deals` use API snapshots only (not your in-game scans), over the window ending at
+the market's latest snapshot.
+
+The same queries are MCP tools (`list_markets`, `search_items`, `get_current_prices`,
+`get_price_history`, `get_market_values`, `get_deals`, `get_crafts`) on a streamable-HTTP MCP
+endpoint at `/api/v1/mcp`. To use it from Claude Code (create a dedicated key on the Clients
+page, e.g. "Claude", so you can revoke it separately):
+
+```bash
+claude mcp add --transport http --scope user goldmine https://gold.example.com/api/v1/mcp --header "Authorization: Bearer gm_…"
+```
+
+`claude mcp get goldmine` should say "Connected". `--scope user` makes it available in every
+project; leave it out to register it for the current folder only. Keep the key out of shared
+`.mcp.json` files.
 
 Local test run without Docker:
 
