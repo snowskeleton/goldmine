@@ -86,6 +86,141 @@ CREATE TABLE IF NOT EXISTS inventory (
     updated   INTEGER,
     PRIMARY KEY (owner, location, item_id)
 );
+-- Account state for the trader (Market.lua): see docs/trader.md.
+CREATE TABLE IF NOT EXISTS recipe_ops (   -- crafting operation info, basic reagents, no concentration
+    char_key            TEXT NOT NULL,
+    recipe_id           INTEGER NOT NULL,
+    base_skill          INTEGER,
+    bonus_skill         INTEGER,
+    difficulty          INTEGER,
+    bonus_difficulty    INTEGER,
+    quality             INTEGER,          -- expected crafting quality (tier)
+    quality_id          INTEGER,
+    lower_skill         INTEGER,          -- skill thresholds of the expected tier
+    upper_skill         INTEGER,
+    quality_craft       INTEGER,
+    concentration_cost  INTEGER,
+    ingenuity_refund    INTEGER,
+    multicraft          REAL,             -- percent
+    resourcefulness     REAL,             -- percent
+    stats               TEXT,             -- JSON {bonus stat name: percent}
+    updated             INTEGER,
+    PRIMARY KEY (char_key, recipe_id)
+);
+CREATE TABLE IF NOT EXISTS professions (
+    char_key           TEXT NOT NULL,
+    profession         TEXT NOT NULL,
+    scanned            INTEGER,           -- recipes last catalogued (profession window open)
+    concentration      INTEGER,
+    concentration_max  INTEGER,
+    skill              INTEGER,           -- from GetProfessionInfo on login
+    max_skill          INTEGER,
+    skill_line         INTEGER,
+    skill_seen         INTEGER,
+    PRIMARY KEY (char_key, profession)
+);
+CREATE TABLE IF NOT EXISTS auction_mail (  -- AH mail seen in the inbox (sale invoices etc.)
+    id           TEXT PRIMARY KEY,         -- Name-Realm:mN
+    char_key     TEXT NOT NULL,
+    arrived      INTEGER NOT NULL,         -- estimated from days left (auction mail lasts 30 days)
+    last_seen    INTEGER,
+    kind         TEXT,                     -- sold | won | outbid | expired | cancelled (from the subject)
+    invoice      TEXT,                     -- seller | seller_temp_invoice | buyer (GetInboxInvoiceInfo)
+    item_id      INTEGER,
+    item_name    TEXT,
+    quantity     INTEGER,
+    player       TEXT,                     -- buyer on seller invoices, seller on buyer invoices
+    bid          INTEGER,
+    buyout       INTEGER,
+    deposit      INTEGER,
+    consignment  INTEGER,                  -- the AH cut
+    money        INTEGER,                  -- gold attached
+    sender       TEXT
+);
+CREATE INDEX IF NOT EXISTS auction_mail_arrived ON auction_mail(arrived);
+CREATE TABLE IF NOT EXISTS crafting_orders (
+    order_id        INTEGER PRIMARY KEY,
+    seen_by         TEXT NOT NULL,
+    order_type      INTEGER,               -- Enum.CraftingOrderType: 0 public, 1 guild, 2 personal, 3 patron (NPC)
+    order_state     INTEGER,
+    item_id         INTEGER,
+    recipe_id       INTEGER,
+    min_quality     INTEGER,
+    tip             INTEGER,               -- commission, copper
+    consortium_cut  INTEGER,
+    expires         INTEGER,
+    claim_end       INTEGER,
+    recraft         INTEGER,
+    fulfillable     INTEGER,
+    reagent_state   INTEGER,
+    customer        TEXT,
+    npc_customer    INTEGER,
+    reagents        TEXT,                  -- JSON [[item_id, quantity], ...] provided by the customer
+    rewards         TEXT,                  -- JSON [[item_id, count], ...] (patron orders)
+    first_seen      INTEGER,
+    last_seen       INTEGER
+);
+CREATE TABLE IF NOT EXISTS crafting_order_buckets (  -- the public order board, per character's last look
+    char_key   TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    item_id    INTEGER,
+    recipe_id  INTEGER,
+    available  INTEGER,
+    tip_avg    INTEGER,
+    tip_max    INTEGER
+);
+CREATE TABLE IF NOT EXISTS craft_results (
+    id             TEXT PRIMARY KEY,      -- Name-Realm:cN
+    char_key       TEXT NOT NULL,
+    ts             INTEGER NOT NULL,
+    recipe_id      INTEGER,
+    item_id        INTEGER,
+    quantity       INTEGER,
+    quality        INTEGER,
+    multicraft     INTEGER,               -- extra items from a multicraft proc (0 = none)
+    concentration  INTEGER,               -- concentration spent
+    ingenuity      INTEGER,               -- 1 = ingenuity proc
+    returned       TEXT,                  -- JSON [[item_id, quantity], ...] from resourcefulness
+    operation_id   INTEGER
+);
+CREATE INDEX IF NOT EXISTS craft_results_ts ON craft_results(ts);
+CREATE TABLE IF NOT EXISTS owned_auctions (
+    auction_id   INTEGER PRIMARY KEY,
+    char_key     TEXT NOT NULL,
+    item_id      INTEGER NOT NULL,
+    variant      INTEGER NOT NULL DEFAULT 0,
+    item_level   INTEGER,
+    quantity     INTEGER NOT NULL,
+    buyout       INTEGER,                 -- as the AH reports it: per unit for commodities
+    bid          INTEGER,
+    unit_price   INTEGER,                 -- copper per unit
+    commodity    INTEGER,
+    time_left    INTEGER,                 -- seconds, as of last_seen
+    status       INTEGER,                 -- Enum.AuctionStatus: 0 active, 1 sold
+    first_seen   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS owned_auction_lists (  -- when each character's list was last seen
+    char_key  TEXT PRIMARY KEY,
+    ts        INTEGER NOT NULL,
+    count     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS warband_money (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    money    INTEGER NOT NULL,            -- copper
+    updated  INTEGER NOT NULL,
+    seen_by  TEXT
+);
+CREATE TABLE IF NOT EXISTS item_meta (    -- from the game client's GetItemInfo
+    item_id      INTEGER PRIMARY KEY,
+    stack_size   INTEGER,
+    sell_price   INTEGER,
+    class_id     INTEGER,
+    subclass_id  INTEGER,
+    bind_type    INTEGER,                 -- Enum.ItemBind: 0 none, 1 on pickup, 2 on equip, 3 on use, ...
+    expansion    INTEGER,                 -- 0 classic ... 10 The War Within, 11 Midnight
+    updated      INTEGER
+);
 DROP VIEW IF EXISTS transactions_view;
 CREATE VIEW transactions_view AS
 SELECT id, char_key AS character,
@@ -226,25 +361,128 @@ def import_market_data(conn: sqlite3.Connection, data: dict, chars: dict) -> Non
     for key, c in chars.items():
         for prof, pdata in _as_dict(c.get("professions")).items():
             recipes = _as_dict(pdata.get("recipes"))
-            conn.execute("""DELETE FROM recipe_reagents WHERE char_key = ? AND recipe_id IN
-                            (SELECT recipe_id FROM recipes WHERE char_key = ? AND profession = ?)""", (key, key, prof))
+            for table in ("recipe_reagents", "recipe_ops"):
+                conn.execute(f"""DELETE FROM {table} WHERE char_key = ? AND recipe_id IN
+                                 (SELECT recipe_id FROM recipes WHERE char_key = ? AND profession = ?)""",
+                             (key, key, prof))
             conn.execute("DELETE FROM recipes WHERE char_key = ? AND profession = ?", (key, prof))
             for rid, r in recipes.items():
                 conn.execute("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?, ?, ?)",
                              (key, int(rid), prof, r.get("n"), r.get("o"), r.get("q")))
                 conn.executemany("INSERT INTO recipe_reagents VALUES (?, ?, ?, ?)",
                                  [(key, int(rid), item, qty) for item, qty in _pairs(r.get("r"), 2)])
+                if isinstance(r.get("op"), dict):
+                    _import_op(conn, key, int(rid), r["op"], pdata.get("t"))
+            conc = pdata.get("conc") or {}
+            conn.execute("""INSERT INTO professions (char_key, profession, scanned, concentration, concentration_max)
+                            VALUES (?, ?, ?, ?, ?) ON CONFLICT(char_key, profession) DO UPDATE SET scanned=excluded.scanned,
+                              concentration=excluded.concentration, concentration_max=excluded.concentration_max""",
+                         (key, prof, pdata.get("t"), conc.get("q"), conc.get("max")))
+        for prof, info in _as_dict(c.get("profInfo")).items():
+            if isinstance(info, dict):
+                conn.execute("""INSERT INTO professions (char_key, profession, skill, max_skill, skill_line, skill_seen)
+                                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(char_key, profession) DO UPDATE SET skill=excluded.skill,
+                                  max_skill=excluded.max_skill, skill_line=excluded.skill_line,
+                                  skill_seen=excluded.skill_seen""",
+                             (key, prof, info.get("rank"), info.get("max"), info.get("line"), info.get("t")))
         inv = c.get("inventory") or {}
         for loc in ("bags", "bank"):
             if loc in inv:
                 conn.execute("DELETE FROM inventory WHERE owner = ? AND location = ?", (key, loc))
                 conn.executemany("INSERT INTO inventory VALUES (?, ?, ?, ?, ?)",
                                  [(key, loc, int(i), n, inv.get(loc + "At")) for i, n in _as_dict(inv[loc]).items()])
+        if isinstance(c.get("auctions"), dict):
+            _import_owned_auctions(conn, key, c["auctions"])
     warband = data.get("warband")
     if warband:
         conn.execute("DELETE FROM inventory WHERE owner = 'warband'")
         conn.executemany("INSERT INTO inventory VALUES ('warband', 'warband', ?, ?, ?)",
                          [(int(i), n, warband.get("t")) for i, n in _as_dict(warband.get("items")).items()])
+    money = data.get("warbandMoney")
+    if isinstance(money, dict) and money.get("m") is not None:
+        conn.execute("""INSERT INTO warband_money VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+                          money=excluded.money, updated=excluded.updated, seen_by=excluded.seen_by
+                        WHERE excluded.updated >= warband_money.updated""",
+                     (money["m"], money.get("t") or 0, money.get("by")))
+    for craft in data.get("crafts") or []:
+        conn.execute("INSERT OR IGNORE INTO craft_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (craft["id"], craft["c"], craft["t"], craft.get("r"), craft.get("item"), craft.get("q"),
+                      craft.get("ql"), craft.get("mc") or 0, craft.get("cs") or 0, 1 if craft.get("ing") else 0,
+                      json.dumps(_pairs(craft.get("rs"), 2)), craft.get("op")))
+    for m in data.get("mail") or []:
+        conn.execute("""INSERT INTO auction_mail VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET last_seen=MAX(COALESCE(auction_mail.last_seen, 0),
+                                                                     COALESCE(excluded.last_seen, 0))""",
+                     (m["id"], m["c"], m["arr"], m.get("seen"), m.get("kind"), m.get("inv"), m.get("iid"),
+                      m.get("item"), m.get("n"), m.get("who"), m.get("bid"), m.get("buy"), m.get("dep"),
+                      m.get("cut"), m.get("money"), m.get("from")))
+    for order_id, o in _as_dict(data.get("craftOrders")).items():
+        if not isinstance(o, dict):
+            continue
+        conn.execute("""INSERT INTO crafting_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(order_id) DO UPDATE SET
+                          first_seen=MIN(crafting_orders.first_seen, excluded.first_seen),
+                          last_seen=MAX(crafting_orders.last_seen, excluded.last_seen),
+                          order_state=CASE WHEN excluded.last_seen >= crafting_orders.last_seen
+                                           THEN excluded.order_state ELSE crafting_orders.order_state END,
+                          fulfillable=CASE WHEN excluded.last_seen >= crafting_orders.last_seen
+                                           THEN excluded.fulfillable ELSE crafting_orders.fulfillable END""",
+                     (int(order_id), o.get("c"), o.get("type"), o.get("state"), o.get("item"), o.get("r"),
+                      o.get("minq"), o.get("tip"), o.get("cut"), o.get("exp"), o.get("claim"),
+                      1 if o.get("recraft") else 0, None if o.get("ok") is None else int(bool(o["ok"])),
+                      o.get("rstate"), o.get("who"), o.get("npc"), json.dumps(_pairs(o.get("rg"), 2)),
+                      json.dumps(_pairs(o.get("rw"), 2)), o.get("first") or 0, o.get("seen") or 0))
+    for key, b in _as_dict(data.get("craftBuckets")).items():
+        if not isinstance(b, dict):
+            continue
+        row = conn.execute("SELECT MAX(ts) FROM crafting_order_buckets WHERE char_key = ?", (key,)).fetchone()
+        if row[0] is not None and row[0] > (b.get("t") or 0):
+            continue  # an older upload
+        conn.execute("DELETE FROM crafting_order_buckets WHERE char_key = ?", (key,))
+        conn.executemany("INSERT INTO crafting_order_buckets VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         [(key, b.get("t") or 0, x.get("item"), x.get("r"), x.get("n"), x.get("avg"), x.get("max"))
+                          for x in b.get("list") or [] if isinstance(x, dict)])
+    for item_id, m in _as_dict(data.get("itemInfo")).items():
+        if isinstance(m, dict):
+            conn.execute("INSERT OR REPLACE INTO item_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (int(item_id), m.get("s"), m.get("v"), m.get("c"), m.get("sc"), m.get("b"), m.get("x"),
+                          m.get("t")))
+
+
+def _import_op(conn, key: str, recipe_id: int, op: dict, updated) -> None:
+    stats = op.get("stats") if isinstance(op.get("stats"), dict) else {}
+    conn.execute("INSERT OR REPLACE INTO recipe_ops VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (key, recipe_id, op.get("sk"), op.get("bsk"), op.get("df"), op.get("bdf"), op.get("ql"),
+                  op.get("qid"), op.get("lo"), op.get("hi"), 1 if op.get("qc") else 0, op.get("cc"), op.get("ing"),
+                  stats.get("Multicraft"), stats.get("Resourcefulness"),
+                  json.dumps(stats, ensure_ascii=False), updated))
+
+
+def _import_owned_auctions(conn, key: str, snap: dict) -> None:
+    """One character's owned-auction list. Auctions are upserted by id (first/last seen), and
+    owned_auction_lists says which list is the latest, so a vanished auction drops out of it."""
+    ts = snap.get("t") or 0
+    row = conn.execute("SELECT ts FROM owned_auction_lists WHERE char_key = ?", (key,)).fetchone()
+    latest = row is None or ts >= row[0]
+    auctions = snap.get("list") or []
+    for a in auctions:
+        qty = a.get("q") or 1
+        buyout = a.get("b")
+        unit = buyout if a.get("cm") == 1 or buyout is None else buyout // max(qty, 1)
+        conn.execute("""INSERT INTO owned_auctions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(auction_id) DO UPDATE SET
+                          first_seen=MIN(owned_auctions.first_seen, excluded.first_seen),
+                          last_seen=MAX(owned_auctions.last_seen, excluded.last_seen),
+                          quantity=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                        THEN excluded.quantity ELSE owned_auctions.quantity END,
+                          time_left=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                         THEN excluded.time_left ELSE owned_auctions.time_left END,
+                          status=CASE WHEN excluded.last_seen >= owned_auctions.last_seen
+                                      THEN excluded.status ELSE owned_auctions.status END""",
+                     (a["id"], key, a["item"], a.get("v") or 0, a.get("il"), qty, buyout, a.get("bid"), unit,
+                      a.get("cm"), a.get("tl"), a.get("st"), ts, ts))
+    if latest:
+        conn.execute("INSERT OR REPLACE INTO owned_auction_lists VALUES (?, ?, ?)", (key, ts, len(auctions)))
 
 
 def dump_toml(cfg: dict) -> str:

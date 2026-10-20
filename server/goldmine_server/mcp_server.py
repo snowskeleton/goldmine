@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, db, journal, ledger, lots, marketdata as md, sim, tasks
+from . import account as acct, auth, db, journal, ledger, lots, marketdata as md, sim, tasks
 from .auth import User
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -33,7 +33,9 @@ INSTRUCTIONS = (
     "seconds with *_iso UTC copies. Call list_markets first for market names (e.g. us-proudmoore for a "
     "realm AH, us-commodities for region-wide commodities). Items are ids or names; search_items finds ids. "
     "sold = units definitely bought from listings still up; gone = units in listings that vanished before "
-    "they could expire (sold or cancelled, so an upper bound on sales).")
+    "they could expire (sold or cancelled, so an upper bound on sales). get_account, get_inventory, "
+    "get_owned_auctions, get_ledger, get_recipes and get_craft_results read your own account as the addon last "
+    "saw it (check the *_seen / as_of times); get_token_price gives the WoW token price in copper.")
 
 _market = {"type": "string", "description": "Market name from list_markets, e.g. us-proudmoore or us-commodities"}
 _items = {"type": "array", "items": {"type": ["integer", "string"]}, "maxItems": md.MAX_ITEMS,
@@ -149,6 +151,85 @@ TASK_TOOLS = [
           [], lambda conn, **kw: tasks.get_results(conn, **kw), user_db=True),
 ]
 
+_char = {"type": "string", "description": "Character, Name or Name-Realm"}
+_since = {"type": ["integer", "string"], "description": "Unix seconds, or 7d / 12h, or an ISO date"}
+_limit = {"type": "integer", "minimum": 1, "maximum": md.MAX_ROWS, "default": 200}
+_offset = {"type": "integer", "minimum": 0, "default": 0}
+
+# Account state (account.py): what the addon saw in game, as of each *_seen / as_of time.
+ACCOUNT_TOOLS = [
+    _tool("get_account", "Account balances",
+          "Gold (copper) per character and in the warband bank, total_gold, when each was last seen (and when "
+          "its bags, bank, auctions and professions were), each character's professions (skill, max_skill, "
+          "needs_catalogue = recipes missing or over a week old), and the latest WoW token price per region.",
+          {"realm": {"type": "string", "description": "Only characters on this realm, e.g. Proudmoore"}},
+          [], lambda conn, **kw: acct.account(conn, **kw), user_db=True),
+    _tool("get_inventory", "Inventory",
+          "Item counts in bags, bank and the warband bank: one entry per item (count = total) with held = "
+          "[{owner, location, count, seen}]. Largest stacks first, paginated.",
+          {"char": _char, "location": {"type": "string", "enum": ["bags", "bank", "warband"]}, "items": _items,
+           "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.inventory(conn, **kw), user_db=True),
+    _tool("get_owned_auctions", "Owned auctions",
+          "Your auctions from each character's latest Auctions-tab list (lists[].as_of): unit_price, quantity, "
+          "status active/sold, time_left and an estimated expires. include_ended adds auctions missing from the "
+          "latest list (sold, expired or cancelled) last seen since `since` (default 14d).",
+          {"char": _char, "include_ended": {"type": "boolean", "default": False}, "since": _since,
+           "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.owned_auctions(conn, **kw), user_db=True),
+    _tool("get_ledger", "Gold ledger",
+          "Every gold change the addon recorded, newest first: delta and balance (copper), source (auction_sale, "
+          "auction_buy, auction_deposit, vendor, mail, ...), item, meta; plus in/out totals per source for all "
+          "matching rows. Default window: the last 7 days.",
+          {"since": _since, "until": _since, "source": {"type": "string"},
+           "item": {"type": ["integer", "string"], "description": "Item id or name"}, "char": _char,
+           "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.ledger_rows(conn, **kw), user_db=True),
+    _tool("get_recipes", "Recipes",
+          "Recipes your characters know, with reagents and crafting operation info as of the last time the "
+          "profession window was open (basic reagents, no concentration): skill vs difficulty, expected quality, "
+          "multicraft/resourcefulness %, concentration_cost; plus each profession's concentration.",
+          {"char": _char, "profession": {"type": "string"},
+           "item": {"type": ["integer", "string"], "description": "Recipes making or using this item"},
+           "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.recipes(conn, **kw), user_db=True),
+    _tool("get_craft_results", "Craft results",
+          "Crafts you made, newest first (quantity, quality, multicraft extra items, resources returned, "
+          "concentration spent), and by_recipe totals with proc rates and average quality. Default: last 30 days.",
+          {"since": _since, "char": _char, "recipe": {"type": "integer"},
+           "item": {"type": ["integer", "string"], "description": "Crafted item id or name"},
+           "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.craft_results(conn, **kw), user_db=True),
+    _tool("get_token_price", "WoW token price",
+          "Latest WoW token price (copper, and whole gold) and its history, a row per price change, newest first. "
+          "Default: the last 30 days.",
+          {"region": {"type": "string", "default": "us"}, "since": _since, "limit": _limit},
+          [], lambda conn, **kw: acct.token_price(conn, **kw)),
+    _tool("get_item_info", "Item info",
+          "Item metadata: vendor_sell/vendor_buy (copper), binding and bound (true = can't be sold on the AH), "
+          "stack_size, class/subclass, expansion, level. From the Blizzard item API (cached for items you own or "
+          "craft) and the game client; sources says which answered.",
+          {"items": _items}, ["items"], lambda conn, items: acct.item_info(conn, items), user_db=True),
+    _tool("get_auction_mail", "Auction mail",
+          "AH mail from your inboxes, newest first: sale invoices (player = buyer, bid/buyout, deposit, "
+          "consignment = AH cut, money = what you received; the ground-truth sale prices), won, outbid, expired "
+          "and cancelled auctions; plus sales_by_item totals. invoice seller_temp_invoice = sold, money pending. "
+          "Default: last 30 days.",
+          {"since": _since, "char": _char,
+           "kind": {"type": "string", "enum": ["sold", "won", "outbid", "expired", "cancelled"]},
+           "item": {"type": ["integer", "string"], "description": "Item id or name"},
+           "player": {"type": "string", "description": "Buyer or seller name"}, "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.auction_mail(conn, **kw), user_db=True),
+    _tool("get_crafting_orders", "Crafting orders",
+          "Crafting orders your characters saw in the crafting orders window (public, guild, personal, patron), "
+          "highest commission (tip, copper) first: item, recipe, min_quality, reagents_provided, patron rewards, "
+          "expires; and public_board, the public order buckets (available, tip_avg, tip_max) as last seen.",
+          {"order_type": {"type": "string", "enum": ["public", "guild", "personal", "patron"]},
+           "recipe": {"type": "integer"}, "item": {"type": ["integer", "string"], "description": "Item id or name"},
+           "active_only": {"type": "boolean", "default": True}, "limit": _limit, "offset": _offset},
+          [], lambda conn, **kw: acct.crafting_orders(conn, **kw), user_db=True),
+]
+
 TOOLS = [
     _tool("list_markets", "List markets",
           "Markets this server collects: name, kind (commodities/realm/classic), region, game, realms served, "
@@ -200,6 +281,7 @@ TOOLS = [
           [], lambda conn, **kw: md.crafts(conn, **kw), user_db=True),
     *TASK_TOOLS,
     *LEARNING_TOOLS,
+    *ACCOUNT_TOOLS,
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}
 

@@ -144,6 +144,49 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(inv[("Snow-Testrealm", "bank", 2996)], 7)
         self.assertEqual(inv[("warband", "warband", 4306)], 50)
 
+    def test_account_state_import(self):
+        self.sync()
+        self.sync()  # idempotent
+        conn = ledger.connect(self.db)
+        q = lambda sql: conn.execute(sql).fetchall()  # noqa: E731
+        self.assertEqual(q("SELECT money, seen_by FROM warband_money"), [(2000000, "Snow-Testrealm")])
+        self.assertEqual(q("SELECT auction_id, item_id, quantity, unit_price, commodity, status, time_left "
+                           "FROM owned_auctions ORDER BY auction_id"),
+                         [(501, 2589, 40, 18, 1, 0, 86000), (502, 2996, 1, 5000, 0, 1, 3600)])
+        self.assertEqual(q("SELECT char_key, count FROM owned_auction_lists"), [("Snow-Testrealm", 2)])
+        self.assertEqual(q("SELECT recipe_id, base_skill, difficulty, quality, concentration_cost, multicraft, "
+                           "resourcefulness FROM recipe_ops"), [(100, 80, 100, 2, 30, 12.5, 9)])
+        self.assertEqual(q("SELECT profession, concentration, concentration_max, skill, max_skill FROM professions "
+                           "ORDER BY profession"),
+                         [("Alchemy", None, None, 30, 100), ("Fishing", None, None, 5, 100),
+                          ("Tailoring", 640, 1000, 90, 100)])
+        self.assertEqual(q("SELECT kind, invoice, item_name, quantity, player, buyout, deposit, consignment, money "
+                           "FROM auction_mail WHERE id = 'Snow-Testrealm:m1'"),
+                         [("sold", "seller", "Linen Cloth", 100, "Buyerguy", 1800, 30, 90, 1710)])
+        self.assertEqual(q("SELECT COUNT(*), COUNT(DISTINCT arrived) FROM auction_mail"), [(5, 4)])
+        self.assertEqual(q("SELECT item_id, quantity FROM auction_mail WHERE kind = 'expired'"), [(2996, 5)])
+        self.assertEqual(q("SELECT order_id, order_type, tip, min_quality, reagents, rewards FROM crafting_orders "
+                           "ORDER BY order_id"),
+                         [(9001, 0, 50000, 2, "[[2589, 2]]", "[]"), (9002, 3, 10000, None, "[]", "[[210814, 3]]")])
+        self.assertEqual(q("SELECT recipe_id, available, tip_max FROM crafting_order_buckets"), [(100, 4, 60000)])
+        self.assertEqual(q("SELECT id, recipe_id, item_id, quantity, quality, multicraft, concentration, returned "
+                           "FROM craft_results"), [("Snow-Testrealm:c1", 100, 2996, 2, 3, 1, 30, "[[2589, 1]]")])
+        meta = {r[0]: r[1:] for r in q("SELECT item_id, stack_size, sell_price, class_id, expansion FROM item_meta")}
+        self.assertEqual(meta[2589], (200, 10, 7, 0))
+        self.assertNotIn(2592, meta)
+
+    def test_owned_auctions_follow_the_latest_list(self):
+        conn = ledger.connect(self.db)
+        chars = {"A-R": {"auctions": {"t": 100, "list": [{"id": 1, "item": 5, "q": 10, "b": 50, "cm": 1, "tl": 900}]}}}
+        ledger.import_market_data(conn, {}, chars)
+        chars["A-R"]["auctions"] = {"t": 200, "list": [{"id": 2, "item": 6, "q": 2, "b": 300, "cm": 0}]}
+        ledger.import_market_data(conn, {}, chars)
+        old = {"A-R": {"auctions": {"t": 100, "list": [{"id": 1, "item": 5, "q": 10, "b": 50, "cm": 1}]}}}
+        ledger.import_market_data(conn, {}, old)  # an older file uploaded later doesn't win
+        self.assertEqual(conn.execute("SELECT ts, count FROM owned_auction_lists").fetchall(), [(200, 1)])
+        self.assertEqual(conn.execute("SELECT auction_id, unit_price, first_seen, last_seen FROM owned_auctions "
+                                      "ORDER BY auction_id").fetchall(), [(1, 50, 100, 100), (2, 150, 200, 200)])
+
     def test_migrates_old_database(self):
         conn = ledger.sqlite3.connect(self.db)
         conn.executescript("""

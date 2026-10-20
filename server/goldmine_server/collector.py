@@ -85,6 +85,11 @@ class Collector:
                 try:
                     client = market.Client(api["client_id"], api["client_secret"], cache_dir=settings.CACHE_DIR)
                     errors = market.collect(conn, client, cfg, log=self.add)
+                    try:
+                        from . import account  # late: account -> marketdata -> services -> collector
+                        account.refresh_item_info(conn, client, cfg, log=self.add)
+                    except Exception as exc:  # item details are nice to have; don't fail the run
+                        self.add(f"item info failed: {exc}")
                 finally:
                     conn.close()
                 self.last_ok = errors == 0

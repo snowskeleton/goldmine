@@ -39,6 +39,8 @@ class FakeClient:
 
     def get(self, region, namespace, path, params=None, if_modified_since=None):
         self.calls.append((region, namespace, path, if_modified_since))
+        if path not in self.responses:
+            raise market.ApiError(f"GET {path} ({namespace}): HTTP 404")
         queue = self.responses[path]
         data, lm = queue.pop(0) if len(queue) > 1 else queue[0]
         if if_modified_since and lm == if_modified_since:
@@ -75,6 +77,9 @@ class CollectTests(unittest.TestCase):
                 {"auctions": [{"id": 2, "name": "Alliance Auction House"}, {"id": 6, "name": "Horde Auction House"}]}, None)],
             "/data/wow/connected-realm/4395/auctions/2": [({"auctions": [realm_auction(8, 2589, 20, buyout=300)]}, t0)],
             "/data/wow/connected-realm/4395/auctions/6": [({"auctions": []}, t0)],
+            "/data/wow/token/index": [({"last_updated_timestamp": t0 * 1000, "price": 3_000_000_000}, None),
+                                      ({"last_updated_timestamp": (t0 + 1200) * 1000, "price": 3_000_000_000}, None),
+                                      ({"last_updated_timestamp": (t0 + 2400) * 1000, "price": 3_100_000_000}, None)],
         })
         cfg = {"market": [
             {"name": "us-commodities", "region": "us", "namespace": "dynamic-us", "kind": "commodities"},
@@ -100,6 +105,34 @@ class CollectTests(unittest.TestCase):
         self.assertIn("us-commodities: unchanged", logs)
         realm_lookups = [c for c in client.calls if c[2] == "/data/wow/realm/proudmoore"]
         self.assertEqual(len(realm_lookups), 1)
+        # The WoW token is read once per retail region per run, and stored only when its price changes.
+        market.collect(self.conn, client, cfg, log=logs.append)
+        tokens = [c for c in client.calls if c[2] == "/data/wow/token/index"]
+        self.assertEqual({(c[0], c[1]) for c in tokens}, {("us", "dynamic-us")})
+        self.assertEqual(len(tokens), 3)
+        self.assertEqual(self.conn.execute("SELECT updated, price FROM token_prices ORDER BY updated").fetchall(),
+                         [(t0, 3_000_000_000), (t0 + 2400, 3_100_000_000)])
+
+    def test_fetch_item_info(self):
+        client = FakeClient({
+            "/data/wow/item/2589": [({"name": "Linen Cloth", "quality": {"type": "COMMON"}, "sell_price": 13,
+                                      "purchase_price": 55, "item_class": {"id": 7, "name": "Tradeskill"},
+                                      "item_subclass": {"id": 5, "name": "Cloth"}, "is_stackable": True,
+                                      "max_count": 0, "level": 5, "inventory_type": {"type": "NON_EQUIP"}}, None)],
+            "/data/wow/item/2996": [({"name": "Bolt of Linen Cloth", "sell_price": 40,
+                                      "preview_item": {"binding": {"type": "ON_ACQUIRE"}}}, None)],
+        })
+        self.assertEqual(market.fetch_item_info(self.conn, client, "us", "dynamic-us", [2589, 2996, 1], log=lambda m: 0), 2)
+        rows = {r[0]: r[1:] for r in self.conn.execute(
+            "SELECT item_id, sell_price, binding, class_name, subclass_id, stackable FROM item_info")}
+        self.assertEqual(rows, {2589: (13, None, "Tradeskill", 5, 1), 2996: (40, "ON_ACQUIRE", None, None, None),
+                                1: (None,) * 5})  # 404: remembered so it isn't asked again
+        self.assertEqual(self.conn.execute("SELECT name FROM items WHERE item_id = 2996").fetchone()[0],
+                         "Bolt of Linen Cloth")
+        self.assertEqual(client.calls[0][1], "static-us")
+        n = len(client.calls)  # known items aren't fetched again, nor ones the API doesn't have (404)
+        market.fetch_item_info(self.conn, client, "us", "dynamic-us", [2589, 2996, 1], log=lambda m: 0)
+        self.assertEqual(len(client.calls), n)
 
 
 if __name__ == "__main__":

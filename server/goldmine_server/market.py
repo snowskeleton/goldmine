@@ -55,6 +55,30 @@ CREATE TABLE IF NOT EXISTS items (
     quality  TEXT,
     fetched  INTEGER
 );
+-- Blizzard item API details for items the users own or craft (market.fetch_item_info).
+CREATE TABLE IF NOT EXISTS item_info (
+    item_id         INTEGER PRIMARY KEY,
+    sell_price      INTEGER,            -- vendor sell price, copper
+    purchase_price  INTEGER,            -- vendor buy price, copper
+    binding         TEXT,               -- ON_ACQUIRE | ON_EQUIP | ON_USE | TO_ACCOUNT | ... (NULL = not bound)
+    class_id        INTEGER,
+    class_name      TEXT,
+    subclass_id     INTEGER,
+    subclass_name   TEXT,
+    stackable       INTEGER,            -- 1/0
+    max_count       INTEGER,            -- unique limit (0 = none); not the stack size
+    level           INTEGER,
+    inventory_type  TEXT,
+    fetched         INTEGER
+);
+-- WoW token price per region, a row only when Blizzard's price changes.
+CREATE TABLE IF NOT EXISTS token_prices (
+    region   TEXT NOT NULL,
+    updated  INTEGER NOT NULL,          -- unix seconds, Blizzard's last_updated_timestamp
+    price    INTEGER NOT NULL,          -- copper
+    fetched  INTEGER NOT NULL,
+    PRIMARY KEY (region, updated)
+);
 DROP VIEW IF EXISTS latest_prices;
 CREATE VIEW latest_prices AS
 SELECT m.name AS market, datetime(s.last_modified, 'unixepoch', 'localtime') AS since,
@@ -153,7 +177,7 @@ class Client:
 MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT")]}
 
 
-SCHEMA_VERSION = 2  # bump when MARKET_SCHEMA / store.SCHEMA change
+SCHEMA_VERSION = 3  # bump when MARKET_SCHEMA / store.SCHEMA change
 
 
 def ensure_schema(conn) -> None:
@@ -268,7 +292,30 @@ def collect(conn, client: Client, cfg: dict, log=print) -> int:
             continue
         log(f"{t['name']}: {r['listings']} listings, {r['items']} items; {r['new']} new, {r['ended']} ended, "
             f"{r['partial']} partly bought; {r['states']} item states written{' (daily keyframe)' if r['keyframe'] else ''}")
+    for region in sorted({m["region"] for m in cfg.get("market", [])
+                          if m.get("namespace") == f"dynamic-{m.get('region')}"}):  # retail regions
+        try:
+            collect_token(conn, client, region, log)
+        except (ApiError, KeyError, TypeError, ValueError) as exc:
+            log(f"wow token ({region}): {exc}")
+            errors += 1
     return errors
+
+
+def collect_token(conn, client: Client, region: str, log=print) -> bool:
+    """Store the region's WoW token price if it changed. Returns True when a row was added."""
+    data, _ = client.get(region, f"dynamic-{region}", "/data/wow/token/index")
+    if data is None:
+        return False
+    price, updated = int(data["price"]), int(data["last_updated_timestamp"]) // 1000
+    last = conn.execute("SELECT price FROM token_prices WHERE region = ? ORDER BY updated DESC LIMIT 1",
+                        (region,)).fetchone()
+    if last and last[0] == price:
+        return False
+    conn.execute("INSERT OR IGNORE INTO token_prices VALUES (?, ?, ?, ?)", (region, updated, price, int(time.time())))
+    conn.commit()
+    log(f"wow token ({region}): {price // 10000:,}g")
+    return True
 
 
 def fetch_item_names(conn, client: Client, region: str, namespace: str, item_ids, log=print) -> int:
@@ -283,9 +330,51 @@ def fetch_item_names(conn, client: Client, region: str, namespace: str, item_ids
             data, _ = client.get(region, static_ns, f"/data/wow/item/{item_id}")
         except ApiError as exc:
             log(f"item {item_id}: {exc}")
+            if "HTTP 404" in str(exc):  # no such item in the API: don't ask again
+                conn.execute("INSERT OR REPLACE INTO item_info (item_id, fetched) VALUES (?, ?)",
+                             (item_id, int(time.time())))
             continue
-        conn.execute("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?)",
-                     (item_id, data.get("name"), (data.get("quality") or {}).get("type"), int(time.time())))
+        _store_item(conn, item_id, data)
+        n += 1
+        if n % 50 == 0:
+            conn.commit()
+    conn.commit()
+    return n
+
+
+def _store_item(conn, item_id: int, data: dict) -> None:
+    """Name (items) and vendor price, binding, class, ... (item_info) from an item API response."""
+    now = int(time.time())
+    conn.execute("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?)",
+                 (item_id, data.get("name"), (data.get("quality") or {}).get("type"), now))
+    cls, sub = data.get("item_class") or {}, data.get("item_subclass") or {}
+    name = lambda v: v.get("en_US") if isinstance(v, dict) else v  # noqa: E731
+    binding = (data.get("preview_item") or {}).get("binding") or {}
+    stackable = data.get("is_stackable")
+    conn.execute("INSERT OR REPLACE INTO item_info VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (item_id, data.get("sell_price"), data.get("purchase_price"), binding.get("type"),
+                  cls.get("id"), name(cls.get("name")), sub.get("id"), name(sub.get("name")),
+                  None if stackable is None else int(bool(stackable)), data.get("max_count"),
+                  data.get("level"), (data.get("inventory_type") or {}).get("type"), now))
+
+
+def fetch_item_info(conn, client: Client, region: str, namespace: str, item_ids, limit: int = 200,
+                    log=print) -> int:
+    """Fetch items with no item_info row yet (at most `limit` per call, so a run stays short)."""
+    static_ns = namespace.replace("dynamic-", "static-", 1)
+    known = {r[0] for r in conn.execute("SELECT item_id FROM item_info")}
+    todo = sorted(set(item_ids) - known)[:limit]
+    n = 0
+    for item_id in todo:
+        try:
+            data, _ = client.get(region, static_ns, f"/data/wow/item/{item_id}")
+        except ApiError as exc:
+            log(f"item {item_id}: {exc}")
+            if "HTTP 404" in str(exc):  # no such item in the API: don't ask again
+                conn.execute("INSERT OR REPLACE INTO item_info (item_id, fetched) VALUES (?, ?)",
+                             (item_id, int(time.time())))
+            continue
+        _store_item(conn, item_id, data)
         n += 1
         if n % 50 == 0:
             conn.commit()
