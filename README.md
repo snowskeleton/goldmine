@@ -20,6 +20,9 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
     marketdata.py read-only market data as JSON (/api/v1/market/*)
     mcp_server.py the same as MCP tools for assistants (/api/v1/mcp)
+    sim.py        market simulator: plan scoring, strategy backtests, conservative inventory value
+    lots.py       FIFO cost-basis lots from the AH ledger, realized P&L, scorecard
+    journal.py    the trader's journal (hypotheses, decisions, lessons) in the user's game DB
     svparse.py    SavedVariables (Lua table) parser
     releases.py   addon + app updates for clients
     cli.py        admin commands that use the server's API keys (probe, realms)
@@ -295,6 +298,30 @@ claude mcp add --transport http --scope user goldmine https://gold.example.com/a
 `claude mcp get goldmine` should say "Connected". `--scope user` makes it available in every
 project; leave it out to register it for the current folder only. Keep the key out of shared
 `.mcp.json` files.
+
+### Trader learning tools (MCP)
+
+For the trader in [docs/trader.md](docs/trader.md): test strategies on history and paper plans
+before real gold is used, and keep score afterwards. All read-only except `journal_write`.
+
+| Tool | |
+|---|---|
+| `backtest` | replay `flip`, `deals` or `craft` over stored history (default: last 30 days): at each decision time (13h and 1h UTC) build the plan the strategy would have published from data up to then, fill it, step on. Realized P&L, ROI, capital used, max drawdown, sell-through, days held, unsold inventory at conservative value, a sample plan, and a `backtest_id` to cite as `bt:<id>` |
+| `evaluate_plan` | score a plan in the Tasks.lua format against what happened after `start_ts`: per-task fills, sales, expiries and fees |
+| `get_lots` | FIFO lots from the AH ledger: open lots at cost and conservative value, days held, realized P&L per item, deposit/cancel fees |
+| `get_scorecard` | per strategy tag: realized P&L, ROI, sell-through, days held, open exposure; weekly AH cash flow; prediction error of journal hypotheses |
+| `journal_write` / `journal_read` | hypotheses, decisions, lessons and notes with strategy, items, a prediction, evidence refs (`task:`, `plan:`, `tx:`, `bt:`, `journal:`), expiry and supersession |
+
+The simulator is deliberately pessimistic (assumptions in `sim.py`'s docstring): buys fill only
+from listings present at or below `max_unit` in the snapshot after the decision; posts fill only
+from later *definite* purchases (units bought out of listings that stayed up) at or above our
+price; 5% cut, deposits (vendor price based, else 0.5% of the price per 12h) lost on expiry.
+Realm AHs list single items that vanish when bought, which never registers as a definite sale,
+so realm-AH items neither fill nor hold value under the default rules (`params.gone_weight`
+counts vanished listings as partial sales, for a sensitivity check only). Conservative value is
+`min(market value, p25 of definite sale prices over 14 days) x 0.95 - one deposit`, 0 without
+sales, halved past `max_hold_days`. Strategy tags arrive with task results; until then
+`get_lots`/`get_scorecard` take a `tags` map (buy transaction id or item id -> tag).
 
 Local test run without Docker:
 

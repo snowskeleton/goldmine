@@ -315,10 +315,11 @@ local function InstallHooks()
         if money and money > 0 then
             local meta = { from = sender, subject = subject }
             local src = "mail"
-            local invoiceType, itemName, player, bid, _, deposit, cut = Safe(GetInboxInvoiceInfo, index)
+            local invoiceType, itemName, player, bid, _, deposit, cut, _, _, _, count = Safe(GetInboxInvoiceInfo, index)
             if invoiceType == "seller" then
                 src = "auction_sale"
                 meta.item, meta.buyer, meta.price, meta.deposit, meta.cut = itemName, player, bid, deposit, cut
+                meta.qty = count -- units sold, for FIFO cost basis on the server
             end
             AddHint(src, { amount = money, meta = meta })
         end
