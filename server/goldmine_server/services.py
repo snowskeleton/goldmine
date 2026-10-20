@@ -13,13 +13,13 @@ from contextlib import contextmanager
 
 from fastapi import HTTPException
 
-from . import db, ledger, pricing, settings, svparse
+from . import db, ledger, pricing, reports, settings, svparse
 from .collector import load_config
 
 class _ThreadStdout:
     """sys.stdout stand-in that sends a thread's prints to its own buffer while it's capturing.
-    The report functions print; redirect_stdout swaps stdout for the whole process, which forced
-    reports to run one at a time. This lets each request thread capture only its own output."""
+    ledger.push prints; redirect_stdout swaps stdout for the whole process, which forced builds
+    (and every report waiting on them) to run one at a time. This captures per request thread."""
 
     def __init__(self, fallback):
         self.fallback = fallback
@@ -64,27 +64,6 @@ def cli_args(conn, **kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def run_report(user_id: int, fn, **kw) -> str:
-    conn = db.user_conn(user_id)
-    try:
-        buf = io.StringIO()
-        with capture_stdout(buf):
-            fn(cli_args(conn, **kw))
-        return buf.getvalue()
-    finally:
-        conn.close()
-
-
-REPORTS = {
-    "crafts": ledger.crafts_cmd,
-    "deals": ledger.deals_cmd,
-    "summary": ledger.summary,
-    "price": ledger.price_cmd,
-    "timing": ledger.timing_cmd,
-    "flips": ledger.flips_cmd,
-}
-
-
 # Finished reports, reused until new AH data or game data arrives (or REPORT_TTL passes, since some
 # windows are relative to now), so flipping between report tabs doesn't recompute each one.
 REPORT_TTL = 600
@@ -103,9 +82,9 @@ def data_version(user_id: int) -> tuple:
         conn.close()
 
 
-def report(user_id: int, kind: str, **kw) -> str:
-    fn = REPORTS.get(kind)
-    if fn is None:
+def report_data(user_id: int, kind: str, **kw) -> dict:
+    """A report as structured data (see reports.py). Shared between requests: don't mutate it."""
+    if kind not in reports.DATA:
         raise HTTPException(404, f"unknown report {kind!r}")
     if kind in ("price", "timing") and not kw.get("item"):
         raise HTTPException(400, "item is required")
@@ -115,12 +94,21 @@ def report(user_id: int, kind: str, **kw) -> str:
         hit = _report_cache.get(key)
     if hit and hit[0] == version and time.time() - hit[1] < REPORT_TTL:
         return hit[2]
-    text = run_report(user_id, fn, **kw)
+    conn = db.user_conn(user_id)
+    try:
+        data = reports.DATA[kind](cli_args(conn, **kw))
+    finally:
+        conn.close()
     with _report_guard:
         for k in [k for k, v in _report_cache.items() if time.time() - v[1] >= REPORT_TTL]:
             del _report_cache[k]
-        _report_cache[key] = (version, time.time(), text)
-    return text
+        _report_cache[key] = (version, time.time(), data)
+    return data
+
+
+def report(user_id: int, kind: str, **kw) -> str:
+    """A report as plain text, as the desktop client prints it."""
+    return reports.text(kind, report_data(user_id, kind, **kw), cli_args(None, **kw))
 
 
 def export_csv(user_id: int, **filters) -> str:

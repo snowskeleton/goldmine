@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
   <link rel="icon" href="/static/coin.svg" type="image/svg+xml">
 </head>
 <body>
@@ -29,7 +29,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer>Goldmine {{ version }}</footer>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ version }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

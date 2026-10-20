@@ -14,7 +14,11 @@
     return g ? `${g.toLocaleString()}g ${s}s` : s ? `${s}s ${cu}c` : `${cu}c`;
   };
   const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
-  let html = `<h2>${esc(data.name)} (${data.item_id})</h2>`;
+  const game = (data.markets[0] || {}).game || "retail";
+  const wowhead = { classic: "mop-classic/", classic1x: "classic/", classicann: "classic/" }[game] || "";
+  let html = `<section class="card report"><header class="sect"><h2>${esc(data.name)}</h2><span class="muted small">#${data.item_id}</span>` +
+    `<span class="ilinks on"><a href="/reports?kind=price&item=${data.item_id}">price history</a>` +
+    `<a href="https://www.wowhead.com/${wowhead}item=${data.item_id}" target="_blank" rel="noopener">wowhead&nbsp;↗</a></span></header>`;
   if (!data.markets.length) html += `<p class="muted">No data for this item yet.</p>`;
   for (const m of data.markets) {
     const local = Array.from({ length: 168 }, (_, i) => m.buckets[((i - offset) % 168 + 168) % 168]);
@@ -22,7 +26,8 @@
     const peakQty = Math.max(1, ...local.map((b) => b.qty_avg || 0));
     html += `<h3>${esc(m.market)} <span class="muted small">${esc(m.game || "")}</span></h3>`;
     for (const [title, value, max, fmt] of [
-      ["Units sold per hour", (b) => b.sold_avg || 0, peak, (v) => v.toFixed(1)],
+      ["Units sold per hour", (b) => b.sold_avg || 0, peak,
+       (v) => v.toLocaleString(undefined, { maximumFractionDigits: v < 10 ? 1 : 0 })],
       ["Units listed", (b) => b.qty_avg || 0, peakQty, (v) => Math.round(v).toLocaleString()],
     ]) {
       html += `<p class="small"><strong>${title}</strong></p><table class="heat"><tr><th></th>`;
@@ -46,5 +51,5 @@
     }
     html += `<p class="legend">Local time (UTC${offset >= 0 ? "+" : ""}${offset}). Darker = more. Hover a cell for details.</p>`;
   }
-  root.innerHTML = html;
+  root.innerHTML = html + `</section>`;
 })();

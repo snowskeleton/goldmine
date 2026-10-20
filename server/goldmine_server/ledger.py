@@ -1,8 +1,5 @@
-"""Per-user game data: the ledger schema, importing the addon's SavedVariables, and the text
-reports (crafts, deals, summary, price, timing) and Data.lua the server hands to clients.
-
-Report functions take an argparse-style namespace with the user's connection in `args.conn`
-and print their output; services.run_report captures it.
+"""Per-user game data: the ledger schema, importing the addon's SavedVariables, the per-market-set
+price/craft/deal tables behind the reports (see reports.py), and the Data.lua the server hands to clients.
 """
 
 from __future__ import annotations
@@ -572,36 +569,6 @@ def fmt_gold(copper: int, signed: bool = False) -> str:
     return f"{sign}{cu}c"
 
 
-def summary(args) -> int:
-    conn = db_for(args)
-    since = int(time.time()) - args.days * 86400 if args.days else None
-    rows = query_rows(conn, char=args.char, since=since)
-    if not rows:
-        print("No transactions in range.")
-        return 0
-    by_src: dict[str, list[int]] = {}
-    for r in rows:
-        s = by_src.setdefault(r["source"], [0, 0, 0])
-        if r["delta"] > 0:
-            s[0] += r["delta"]
-        else:
-            s[1] += r["delta"]
-        s[2] += 1 if r["delta"] else 0
-    span = f"last {args.days} days" if args.days else "all time"
-    print(f"{len(rows)} entries, {span}" + (f", {args.char}" if args.char else ""))
-    print(f"{'source':<16}{'in':>18}{'out':>18}{'net':>18}{'count':>7}")
-    tin = tout = 0
-    for src, (i, o, n) in sorted(by_src.items(), key=lambda kv: -abs(kv[1][0] + kv[1][1])):
-        tin, tout = tin + i, tout + o
-        print(f"{src:<16}{fmt_gold(i):>18}{fmt_gold(o):>18}{fmt_gold(i + o, True):>18}{n:>7}")
-    print(f"{'TOTAL':<16}{fmt_gold(tin):>18}{fmt_gold(tout):>18}{fmt_gold(tin + tout, True):>18}")
-    print("\nBalances:")
-    for key, bal, seen in conn.execute("SELECT key, balance, last_seen FROM characters ORDER BY balance DESC"):
-        when = dt.datetime.fromtimestamp(seen).strftime("%Y-%m-%d %H:%M") if seen else "?"
-        print(f"  {key:<28}{fmt_gold(bal or 0):>18}   (as of {when})")
-    return 0
-
-
 def api_client(args) -> tuple[market.Client, dict]:
     cfg = market.load_config(args.config)
     api = cfg.get("api", {})
@@ -666,53 +633,6 @@ def set_reports(conn, args, cfg=None) -> list[pricing.SetExport]:
     return exports
 
 
-def set_title(st: pricing.MarketSet) -> str:
-    who = ", ".join(k.split("-")[0] for k in st.chars) or "no characters"
-    where = " / ".join(st.realms) if st.kind == "realm" else f"{st.region.upper()} commodities"
-    return f"== {st.game} · {where} ({who})"
-
-
-def crafts_cmd(args) -> int:
-    conn = db_for(args)
-    exports = [ex for ex in set_reports(conn, args) if ex.crafts]
-    if not exports:
-        print("No recipes yet. Open each profession window in game, then /reload and sync.")
-        return 0
-    for ex in exports:
-        crafts = ex.crafts
-        names = item_names(conn, {c.output_item for c in crafts} | {m for c in crafts for m in c.missing}, args)
-        print(set_title(ex.set))
-        print(f"{'recipe':<34}{'cost':>15}{'sells for':>15}{'profit':>16}{'sold/day':>10}  crafters")
-        for c in crafts[:args.limit]:
-            f = lambda v, signed=False: fmt_gold(v, signed) if v is not None else "?"  # noqa: E731
-            line = f"{(c.name or names[c.output_item])[:33]:<34}{f(c.cost):>15}{f(c.revenue):>15}{f(c.profit, True):>16}"
-            line += f"{c.sold_per_day:>10.1f}  {', '.join(k.split('-')[0] for k in c.crafters)}"
-            if c.missing:
-                line += f"   (no price: {', '.join(names[m] for m in c.missing[:3])})"
-            print(line)
-        print()
-    print("sells for = min(market value, current lowest) after the 5% AH cut; cost uses current p10 prices.")
-    return 0
-
-
-def deals_cmd(args) -> int:
-    conn = db_for(args)
-    exports = [ex for ex in set_reports(conn, args) if ex.deals]
-    if not exports:
-        print("No deals right now (or not enough snapshots yet; sale rates need a few hours of data).")
-        return 0
-    for ex in exports:
-        deals = ex.deals[:args.limit]
-        names = item_names(conn, {d.item_id for d in deals}, args)
-        print(set_title(ex.set))
-        print(f"{'item':<34}{'listed at':>15}{'market':>15}{'off':>6}{'profit/unit':>16}{'sold/day':>10}")
-        for d in deals:
-            print(f"{names[d.item_id][:33]:<34}{fmt_gold(d.current_min):>15}{fmt_gold(d.market_value):>15}"
-                  f"{d.discount:>6.0%}{fmt_gold(d.profit_per_unit, True):>16}{d.sold_per_day:>10.1f}")
-        print()
-    return 0
-
-
 def push(conn, args, cfg=None, client=None) -> None:
     """Write the addon's Data.lua (prices, crafts, deals for the user's realms) to args.addon_data."""
     exports = set_reports(conn, args, cfg)
@@ -731,99 +651,6 @@ def resolve_items(conn, query: str) -> list[int]:
         (f"%{query}%",)) if r[0] not in ids]
     return ids
 
-
-DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-SHADES = " .:-=+*#%@"
-
-
-def timing_cmd(args) -> int:
-    offset = getattr(args, "utc_offset", 0)  # the server reports in UTC; clients pass their own offset
-    conn = db_for(args)
-    ids = resolve_items(conn, args.item)
-    if not ids:
-        print("No matching item (pass the item id if its name isn't known yet).")
-        return 1
-    item_id = ids[0]
-    name = item_names(conn, [item_id], args)[item_id]
-    games = dict(conn.execute("SELECT name, game FROM markets"))
-    profiles = pricing.timing(conn, item_id, markets=args.market or None)
-    if args.json:
-        print(json.dumps({"item_id": item_id, "name": name, "utc_offset_hours": offset,
-                          "markets": [{"market": m, "game": games.get(m), "buckets": pricing.to_local(b, offset)}
-                                      for m, b in profiles.items()]}))
-        return 0
-    print(f"{name} ({item_id}) - UTC{offset:+d}")
-    if not profiles:
-        print("  No sales recorded yet for this item. Timing needs a few days of hourly snapshots.")
-        return 0
-    for mkt, buckets in profiles.items():
-        local = pricing.to_local(buckets, offset)
-        peak = max((b["sold_avg"] or 0) for b in local) or 1
-        print(f"\n{mkt} ({games.get(mkt)}): average units sold per hour")
-        print("      " + "".join(f"{h:<3}" for h in range(0, 24, 3)).ljust(24) + "  best hours")
-        for d in range(7):
-            row = local[d * 24:(d + 1) * 24]
-            cells = "".join(SHADES[min(int((b["sold_avg"] or 0) / peak * (len(SHADES) - 1) + 0.5), len(SHADES) - 1)]
-                            if b["samples"] else " " for b in row)
-            best = sorted(range(24), key=lambda h: -(row[h]["sold_avg"] or 0))[:3]
-            best_txt = ", ".join(f"{h:02d}h ({row[h]['sold_avg']:.1f})" for h in best if row[h]["sold_avg"])
-            day_total = sum(b["sold_avg"] or 0 for b in row)
-            print(f"  {DAYS[d]} {cells}  {best_txt}  [day ~{day_total:.0f}]")
-        cheapest = min((b for b in local if b["p10_avg"]), key=lambda b: b["p10_avg"], default=None)
-        if cheapest:
-            i = local.index(cheapest)
-            print(f"  cheapest slot: {DAYS[i // 24]} {i % 24:02d}h (avg p10 {fmt_gold(cheapest['p10_avg'])})")
-    return 0
-
-
-
-def flips_cmd(args) -> int:
-    """Commodities that keep swinging from their lows to their highs, plus a weekday x hour price index."""
-    offset = getattr(args, "utc_offset", 0)
-    days = args.days or 7
-    conn = db_for(args)
-    mkts = args.market or [n for n, in conn.execute(
-        "SELECT name FROM markets WHERE kind = 'commodities' AND COALESCE(game, 'retail') = 'retail' ORDER BY name")]
-    if not mkts:
-        print("No retail commodity market configured.")
-        return 0
-    for mkt in mkts:
-        flips, index, liquid = pricing.flip_report(conn, mkt, days=days)
-        names = item_names(conn, {f.item_id for f in flips[:args.limit]}, args)
-        print(f"{mkt}: flips over the last {days:g} days ({liquid} liquid items, "
-              f"{len(flips)} with 2+ round trips and 3%+ net)")
-        if flips:
-            print(f"{'item':<30}{'buy below':>15}{'sell at':>15}{'net':>6}{'trips':>6}{'drift':>8}"
-                  f"{'depth@low':>10}{'sold/d':>9}{'moved/d':>11}{'profit/trip':>13}")
-            for f in flips[:args.limit]:
-                depth = f"{f.depth_low:,}" if f.depth_low is not None else "-"
-                print(f"{names[f.item_id][:29]:<30}{fmt_gold(f.buy_below):>15}{fmt_gold(f.sell_at):>15}"
-                      f"{f.margin:>6.0%}{f.trips:>6}{f.drift:>+8.0%}{depth:>10}{f.sold_per_day:>9,.0f}"
-                      f"{f.moved_per_day:>11,.0f}{f.profit_per_trip // 10000:>12,}g")
-            print("  buy below = P25 min price, sell at = P75; net is after the 5% AH cut. depth@low = units within"
-                  " 5% of the min while at the lows; profit/trip buys min(depth@low, moved/d).")
-        local = pricing.to_local([v for row in index for v in row], offset)
-        cells = [v for v in local if v is not None]
-        if not cells:
-            print()
-            continue
-        print(f"\n  Price index (min price / own median, median over liquid items), % vs median, UTC{offset:+d}")
-        print("  hour " + "".join(f"{d:>7}" for d in DAYS))
-        for h in range(24):
-            row = [local[d * 24 + h] for d in range(7)]
-            print(f"  {h:02d}h  " + "".join(f"{(v - 1) * 100:>+7.1f}" if v is not None else f"{'':>7}" for v in row))
-        day_avg = []
-        for d in range(7):
-            vals = [v for v in local[d * 24:(d + 1) * 24] if v is not None]
-            day_avg.append(sum(vals) / len(vals) if vals else None)
-        print("  avg  " + "".join(f"{(v - 1) * 100:>+7.1f}" if v is not None else f"{'':>7}" for v in day_avg))
-        lo, hi = min(cells), max(cells)
-        li, hi_i = local.index(lo), local.index(hi)
-        print(f"  cheapest {DAYS[li // 24]} {li % 24:02d}h ({(lo - 1) * 100:+.1f}%), dearest {DAYS[hi_i // 24]} "
-              f"{hi_i % 24:02d}h ({(hi - 1) * 100:+.1f}%): swing {(hi / lo - 1) * 100:.1f}% vs the 5% AH cut. "
-              f"US weekly reset is Tue 15h UTC.")
-        print()
-    return 0
 
 def list_realms(client, region: str, namespace: str) -> list[dict]:
     """Every realm in a namespace: connected_realm_id, slug, name, type, category."""
@@ -850,30 +677,3 @@ PROBE_NAMESPACES = [g["prefix"] + "-{r}" for g in market.NAMESPACE_GAMES] + [
                     # Guesses for Forever; add more with --namespace once Blizzard documents it.
                     "dynamic-forever-{r}", "dynamic-classicforever-{r}", "dynamic-classicfor-{r}",
                     "dynamic-wowforever-{r}", "dynamic-classicplus-{r}"]
-
-
-def price_cmd(args) -> int:
-    conn = db_for(args)
-    ids = resolve_items(conn, args.item)
-    if not ids:
-        print("No matching item (names are known for items you've traded; otherwise pass the item id).")
-        return 1
-    for item_id in ids[:10]:
-        name = conn.execute("SELECT name FROM items WHERE item_id = ?", (item_id,)).fetchone()
-        print(f"\n{name[0] if name else 'item'} ({item_id})")
-        rows = conn.execute(
-            """SELECT m.name, s.last_modified, st.min_price, st.p10, st.median, st.quantity, st.sold + st.gone
-               FROM item_states st
-               JOIN markets m ON m.mid = st.market_id
-               JOIN snapshots s ON s.id = st.snap
-               WHERE st.item_id = ? AND s.last_modified >= ?
-               ORDER BY m.name, s.last_modified""",
-            (item_id, int(time.time()) - args.hours * 3600)).fetchall()
-        if not rows:
-            print("  no changes in range (prices are stored when they change)")
-        print(f"  {'market':<22}{'changed at':<14}{'min':>16}{'p10':>16}{'median':>16}{'listed':>8}{'sold':>6}")
-        for m, lm, mn, p10, med, qty, sold in rows:
-            when = dt.datetime.fromtimestamp(lm).strftime("%m-%d %H:%M") if lm else "?"
-            f = lambda v: fmt_gold(v) if v is not None else "-"  # noqa: E731
-            print(f"  {m:<22}{when:<14}{f(mn):>16}{f(p10):>16}{f(med):>16}{qty:>8}{sold:>6}")
-    return 0

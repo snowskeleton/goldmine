@@ -11,7 +11,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from goldmine_server import ledger, market, pricing, store, svparse  # noqa: E402
+from goldmine_server import ledger, market, pricing, reports, store, svparse  # noqa: E402
 
 
 HOUR = 3600
@@ -249,7 +249,7 @@ class FlipTests(unittest.TestCase):
         try:
             buf = io.StringIO()
             with redirect_stdout(buf):
-                ledger.flips_cmd(args)
+                reports.flips_cmd(args)
         finally:
             pricing.flip_report = orig
         text = buf.getvalue()

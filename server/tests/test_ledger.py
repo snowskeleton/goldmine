@@ -12,7 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from goldmine_server import ledger, svparse  # noqa: E402
+from goldmine_server import ledger, reports, svparse  # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "Goldmine.lua"
 
@@ -111,7 +111,7 @@ class ImportTests(unittest.TestCase):
         self.sync()
         out = io.StringIO()
         with redirect_stdout(out):
-            ledger.summary(argparse.Namespace(conn=ledger.connect(self.db), days=None, char=None))
+            reports.summary_cmd(argparse.Namespace(conn=ledger.connect(self.db), days=None, char=None))
         out = out.getvalue()
         self.assertIn("auction_sale", out)
         self.assertIn("TOTAL", out)
@@ -214,6 +214,16 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(ledger.fmt_gold(-479), "-4s 79c")
         self.assertEqual(ledger.fmt_gold(10005, True), "+1g 00s 05c")
         self.assertEqual(ledger.fmt_gold(8077059418), "807,705g 94s 18c")
+        self.assertEqual(reports.gold(8077059418), "807,705g")
+        self.assertEqual(reports.gold(123456, True), "+12g 34s")
+        self.assertEqual(reports.gold(-479), "-4s 79c")
+        self.assertEqual(reports.gold(None), "-")
+
+    def test_text_table_columns_never_touch(self):
+        lines = reports.table(["item", "listed at"], [["Spidery Witch Hat", reports.gold(199999000)],
+                                                       ["x", reports.gold(7722140055)]], right={1})
+        self.assertEqual(lines[1], "Spidery Witch Hat    19,999g")
+        self.assertEqual(lines[2], "x                   772,214g")
 
 
 if __name__ == "__main__":

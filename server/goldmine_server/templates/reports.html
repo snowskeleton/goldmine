@@ -1,35 +1,302 @@
 {% extends "base.html" %}
 {% block title %}Reports · {{ app_name }}{% endblock %}
+
+{# Money: whole gold above 100g, gold+silver above 1g, else silver+copper. Units are coloured. #}
+{% macro money(c, signed=False) -%}
+{%- if c is none %}<span class="muted">–</span>{% else -%}
+{%- set a = c if c >= 0 else -c -%}
+{%- set sign = '−' if c < 0 else ('+' if signed and c > 0 else '') -%}
+{%- set g = a // 10000 -%}{%- set s = (a // 100) % 100 -%}{%- set cu = a % 100 -%}
+<span class="money{{ ' neg' if signed and c < 0 }}{{ ' pos' if signed and c > 0 }}" title="{{ fmt_gold(c, signed) }}">
+{%- if g >= 100 %}{{ sign }}{{ '{:,}'.format(g) }}<i class="g">g</i>
+{%- elif g %}{{ sign }}{{ g }}<i class="g">g</i> {{ '%02d' % s }}<i class="s">s</i>
+{%- elif s %}{{ sign }}{{ s }}<i class="s">s</i> {{ '%02d' % cu }}<i class="c">c</i>
+{%- else %}{{ sign }}{{ cu }}<i class="c">c</i>{% endif %}</span>
+{%- endif %}
+{%- endmacro %}
+
+{% macro item_cell(id, name, game='retail', sub=none) -%}
+<td class="item" data-v="{{ name }}">
+  <a class="iname" href="/reports?kind=price&amp;item={{ id }}" title="Price history for {{ name }} ({{ id }})">{{ name }}</a>
+  <span class="ilinks"><a href="/reports?kind=timing&amp;item={{ id }}" title="When it sells">timing</a><a href="{{ wowhead(id, game) }}" target="_blank" rel="noopener" title="{{ name }} on Wowhead">wowhead&nbsp;↗</a></span>
+  {%- if sub %}<div class="isub">{{ sub }}</div>{% endif %}
+</td>
+{%- endmacro %}
+
+{# A bar in a table cell; value/max in 0..1, negative values grow left in the loss colour. #}
+{% macro bar(v, max) -%}
+{%- set f = ((v if v > 0 else -v) / max) if max else 0 -%}
+<span class="cellbar{{ ' neg' if v < 0 }}"><span style="width: {{ '%.1f' % ([f, 1] | min * 100) }}%"></span></span>
+{%- endmacro %}
+
+{% macro section_head(s) -%}
+<header class="sect">
+  <h2>{{ s.where }}</h2>
+  <span class="chip">{{ s.game }}</span>
+  {% if s.chars %}<span class="muted small">{{ s.chars | join(', ') }}</span>{% endif %}
+  <span class="muted small grow-r">{{ s.rows | length }} rows</span>
+</header>
+{%- endmacro %}
+
 {% block content %}
 <h1>Reports</h1>
 <nav class="tabs">
-  {% for k, label in kinds %}<a href="/reports?kind={{ k }}" class="{{ 'on' if k == kind }}">{{ label }}</a>{% endfor %}
+  {% for k, label in kinds %}<a href="/reports?kind={{ k }}{% if k in ('price', 'timing') and item %}&amp;item={{ item | urlencode }}{% endif %}" class="{{ 'on' if k == kind }}">{{ label }}</a>{% endfor %}
 </nav>
-{% if kind in ('price', 'timing') %}
-<form class="row" method="get" action="/reports" id="itemform">
-  <input type="hidden" name="kind" value="{{ kind }}">
-  <input name="item" value="{{ item }}" placeholder="Item name or id" required>
-  <button class="primary">Show</button>
-</form>
-{% elif kind in ('summary', 'flips') %}
-<form class="row" method="get" action="/reports">
-  <input type="hidden" name="kind" value="{{ kind }}">
-  <label class="row">Last <input type="number" name="days" value="{{ days }}" min="1" max="3650" style="width:6em"> days</label>
-  <button>Update</button>
-</form>
-{% endif %}
-<p class="muted small">
-  {% if kind == 'crafts' %}Profit per craft for every recipe your characters know (open each profession window in game once).
-  {% elif kind == 'deals' %}Listed well below market value, and actually selling.
-  {% elif kind == 'flips' %}Commodities that keep swinging between their own lows (P25) and highs (P75), with a weekday x hour price index (UTC).
-  {% elif kind == 'timing' %}When an item sells and how much is listed, by day and hour, in your local time.
-  {% elif kind == 'summary' %}Your gold in and out by source, from the addon's ledger.
-  {% else %}Every change in an item's price and supply over the last 24 hours.{% endif %}
-</p>
+
+<div class="rbar">
+  <p class="muted small">
+    {% if kind == 'crafts' %}Profit per craft for every recipe your characters know (open each profession window in game once).
+    {% elif kind == 'deals' %}Listed well below market value, and actually selling. The line is the lowest listing over the last {{ data.hours if data else 72 }} hours; the dashed line is market value.
+    {% elif kind == 'flips' %}Commodities that keep swinging between their own lows (P25) and highs (P75), with a weekday × hour price index.
+    {% elif kind == 'timing' %}When an item sells and how much is listed, by day and hour, in your local time.
+    {% elif kind == 'summary' %}Your gold in and out by source, from the addon's ledger.
+    {% else %}Every change in an item's price and supply.{% endif %}
+  </p>
+  {% if kind in ('price', 'timing') %}
+  <form class="row" method="get" action="/reports" id="itemform">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <input name="item" value="{{ item }}" placeholder="Item name or id" required>
+    {% if kind == 'price' %}
+    <select name="hours" aria-label="Window">
+      {% for h, l in [(24, '24 hours'), (72, '3 days'), (168, '7 days'), (336, '14 days')] %}<option value="{{ h }}" {{ 'selected' if h == hours }}>{{ l }}</option>{% endfor %}
+    </select>
+    {% endif %}
+    <button class="primary">Show</button>
+  </form>
+  {% elif kind in ('summary', 'flips') %}
+  <form class="row" method="get" action="/reports">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <label class="row">Last <input type="number" name="days" value="{{ days }}" min="1" max="3650" style="width:6em"> days</label>
+    <button>Update</button>
+  </form>
+  {% endif %}
+</div>
+
 {% if kind == 'timing' %}
   <div id="timing" data-item="{{ item }}"></div>
-{% elif output is not none %}
-  <pre class="report">{{ output }}</pre>
+{% elif data is none %}
+{% elif data.empty %}
+  <div class="card empty"><p>{{ data.empty }}</p></div>
+
+{# ---------------------------------------------------------------- deals #}
+{% elif kind == 'deals' %}
+  {% for s in data.sections %}
+  <section class="card report">
+    {{ section_head(s) }}
+    {% set maxp = s.rows | map(attribute='profit') | max %}
+    <div class="tscroll"><table class="sortable">
+      <thead><tr>
+        <th data-sort="text">Item</th>
+        <th class="num" data-sort="num">Listed at</th>
+        <th class="num" data-sort="num">Market</th>
+        <th class="num" data-sort="num">Off</th>
+        <th class="num" data-sort="num">Profit / unit</th>
+        <th class="num" data-sort="num">Sold / day</th>
+        <th class="spark-h">Last {{ data.hours }}h</th>
+      </tr></thead>
+      <tbody>
+      {% for r in s.rows %}
+      <tr>
+        {{ item_cell(r.item_id, r.name, s.game) }}
+        <td class="num" data-v="{{ r.listed }}">{{ money(r.listed) }}</td>
+        <td class="num" data-v="{{ r.market }}">{{ money(r.market) }}</td>
+        <td class="num" data-v="{{ r.discount }}"><span class="pill">{{ '%.0f' % (r.discount * 100) }}%</span></td>
+        <td class="num" data-v="{{ r.profit }}">{{ money(r.profit, True) }}{{ bar(r.profit, maxp) }}</td>
+        <td class="num" data-v="{{ r.sold_per_day }}">{{ '%.1f' % r.sold_per_day }}</td>
+        <td class="spark"><span class="sparkline" data-points="{{ r.history | tojson | forceescape }}" data-ref="{{ r.market }}" data-now="{{ r.listed }}"></span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endfor %}
+  <p class="muted small">Rows start ordered by profit per unit times sales (capped at 20 a day). {{ data.note }} Click a column to sort; click an item for its price history.</p>
+
+{# ---------------------------------------------------------------- crafts #}
+{% elif kind == 'crafts' %}
+  {% for s in data.sections %}
+  <section class="card report">
+    {{ section_head(s) }}
+    {% set profits = s.rows | selectattr('profit', 'ne', none) | map(attribute='profit') | map('abs') | list %}
+    {% set maxp = profits | max if profits else 0 %}
+    <div class="tscroll"><table class="sortable">
+      <thead><tr>
+        <th data-sort="text">Recipe</th>
+        <th data-sort="text">Profession</th>
+        <th class="num" data-sort="num">Cost</th>
+        <th class="num" data-sort="num">Sells for</th>
+        <th class="num" data-sort="num" aria-sort="descending">Profit</th>
+        <th class="num" data-sort="num">Sold / day</th>
+        <th data-sort="text">Crafters</th>
+      </tr></thead>
+      <tbody>
+      {% for r in s.rows %}
+      <tr>
+        {% set sub %}{% if r.output_qty and r.output_qty != 1 %}makes {{ '%g' % r.output_qty }}{% endif %}{% if r.missing %}<span class="warn">no price: {% for m in r.missing[:3] %}<a href="/reports?kind=price&amp;item={{ m.item_id }}">{{ m.name }}</a>{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}{% endset %}
+        {{ item_cell(r.item_id, r.name, s.game, sub if (r.missing or (r.output_qty and r.output_qty != 1)) else none) }}
+        <td class="muted" data-v="{{ r.profession or '' }}">{{ r.profession or '' }}</td>
+        <td class="num" data-v="{{ r.cost if r.cost is not none else '' }}">{{ money(r.cost) }}</td>
+        <td class="num" data-v="{{ r.revenue if r.revenue is not none else '' }}">{{ money(r.revenue) }}</td>
+        <td class="num" data-v="{{ r.profit if r.profit is not none else '' }}">{{ money(r.profit, True) }}{% if r.profit is not none %}{{ bar(r.profit, maxp) }}{% endif %}</td>
+        <td class="num" data-v="{{ r.sold_per_day }}">{{ '%.1f' % r.sold_per_day }}</td>
+        <td class="muted" data-v="{{ r.crafters | join(', ') }}">{{ r.crafters | join(', ') }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endfor %}
+  <p class="muted small">{{ data.note }}</p>
+
+{# ---------------------------------------------------------------- flips #}
+{% elif kind == 'flips' %}
+  {% for s in data.sections %}
+  <section class="card report">
+    <header class="sect">
+      <h2>{{ s.market }}</h2><span class="chip">{{ s.game }}</span>
+      <span class="muted small">{{ s.liquid }} liquid items · {{ s.count }} with 2+ round trips and 3%+ net over {{ '%g' % data.days }} days</span>
+    </header>
+    {% if s.rows %}
+    {% set maxp = s.rows | map(attribute='profit_per_trip') | max %}
+    <div class="tscroll"><table class="sortable">
+      <thead><tr>
+        <th data-sort="text">Item</th>
+        <th class="num" data-sort="num" title="P25 of the min price">Buy below</th>
+        <th class="num" data-sort="num" title="P75 of the min price">Sell at</th>
+        <th class="num" data-sort="num" title="Return after the 5% AH cut">Net</th>
+        <th class="num" data-sort="num" title="Completed low→high round trips">Trips</th>
+        <th class="num" data-sort="num" title="Last quarter of the window vs the first">Drift</th>
+        <th class="num" data-sort="num" title="Units within 5% of the min while at the lows">Depth @ low</th>
+        <th class="num" data-sort="num">Sold / day</th>
+        <th class="num" data-sort="num" title="Sold plus listings that vanished early (an upper bound)">Moved / day</th>
+        <th class="num" data-sort="num" aria-sort="descending">Profit / trip</th>
+      </tr></thead>
+      <tbody>
+      {% for r in s.rows %}
+      <tr>
+        {{ item_cell(r.item_id, r.name, s.game) }}
+        <td class="num" data-v="{{ r.buy_below }}">{{ money(r.buy_below) }}</td>
+        <td class="num" data-v="{{ r.sell_at }}">{{ money(r.sell_at) }}</td>
+        <td class="num" data-v="{{ r.margin }}"><span class="pill">{{ '%.0f' % (r.margin * 100) }}%</span></td>
+        <td class="num" data-v="{{ r.trips }}">{{ r.trips }}</td>
+        <td class="num" data-v="{{ r.drift }}">{{ '%+.0f' % (r.drift * 100) }}%</td>
+        <td class="num" data-v="{{ r.depth_low if r.depth_low is not none else '' }}">{{ '{:,}'.format(r.depth_low) if r.depth_low is not none else '–' }}</td>
+        <td class="num" data-v="{{ r.sold_per_day }}">{{ '{:,.0f}'.format(r.sold_per_day) }}</td>
+        <td class="num" data-v="{{ r.moved_per_day }}">{{ '{:,.0f}'.format(r.moved_per_day) }}</td>
+        <td class="num" data-v="{{ r.profit_per_trip }}">{{ money(r.profit_per_trip) }}{{ bar(r.profit_per_trip, maxp) }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="muted small">{{ data.note }}</p>
+    {% endif %}
+    <h3>Price index by weekday and hour</h3>
+    <p class="muted small">Each liquid item's lowest listing against its own median, the median over items. Blue is cheaper than usual (buy), red dearer (sell).</p>
+    <div class="pindex" data-index="{{ s.index | tojson | forceescape }}"></div>
+  </section>
+  {% endfor %}
+
+{# ---------------------------------------------------------------- ledger summary #}
+{% elif kind == 'summary' %}
+  {% set t = data.total %}
+  <div class="kpis">
+    <div class="kpi"><span class="label">Gold in</span><span class="value">{{ money(t['in']) }}</span></div>
+    <div class="kpi"><span class="label">Gold out</span><span class="value">{{ money(t.out) }}</span></div>
+    <div class="kpi"><span class="label">Net</span><span class="value">{{ money(t.net, True) }}</span></div>
+    <div class="kpi"><span class="label">Entries</span><span class="value">{{ '{:,}'.format(data.entries) }}</span>
+      <span class="muted small">{{ 'last %d days' % data.days if data.days else 'all time' }}</span></div>
+  </div>
+  <section class="card report">
+    <header class="sect"><h2>By source</h2></header>
+    {% set m = [data.rows | map(attribute='in') | max, -(data.rows | map(attribute='out') | min)] | max %}
+    <div class="tscroll"><table class="sortable">
+      <thead><tr>
+        <th data-sort="text">Source</th>
+        <th class="num" data-sort="num">In</th>
+        <th class="num" data-sort="num">Out</th>
+        <th class="flow-h">Out ← → In</th>
+        <th class="num" data-sort="num">Net</th>
+        <th class="num" data-sort="num">Count</th>
+      </tr></thead>
+      <tbody>
+      {% for r in data.rows %}
+      <tr>
+        <td data-v="{{ r.source }}">{{ r.source | replace('_', ' ') }}</td>
+        <td class="num" data-v="{{ r['in'] }}">{{ money(r['in']) }}</td>
+        <td class="num" data-v="{{ r.out }}">{{ money(r.out) }}</td>
+        <td class="flow" title="in {{ fmt_gold(r['in']) }} · out {{ fmt_gold(r.out) }}">
+          <span class="flowbar"><span class="half l"><span class="o" style="width: {{ '%.1f' % ((-r.out / m * 100) if m else 0) }}%"></span></span><span class="half r"><span class="i" style="width: {{ '%.1f' % ((r['in'] / m * 100) if m else 0) }}%"></span></span></span>
+        </td>
+        <td class="num" data-v="{{ r.net }}">{{ money(r.net, True) }}</td>
+        <td class="num" data-v="{{ r.count }}">{{ r.count }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+      <tfoot><tr>
+        <th>Total</th><td class="num">{{ money(t['in']) }}</td><td class="num">{{ money(t.out) }}</td><td></td>
+        <td class="num">{{ money(t.net, True) }}</td><td></td>
+      </tr></tfoot>
+    </table></div>
+  </section>
+  <section class="card report">
+    <header class="sect"><h2>Balances</h2><span class="muted small">as of each character's last sync</span></header>
+    {% set bmax = data.balances | map(attribute='balance') | max if data.balances else 0 %}
+    <table>
+      <tbody>
+      {% for b in data.balances %}
+      <tr>
+        <td>{{ b.name }} <span class="muted small">{{ b.key.split('-', 1)[1] if '-' in b.key else '' }}</span></td>
+        <td class="num">{{ money(b.balance) }}</td>
+        <td class="wbar">{{ bar(b.balance, bmax) }}</td>
+        <td class="muted small num">{{ b.last_seen | ago }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+{# ---------------------------------------------------------------- price history #}
+{% elif kind == 'price' %}
+  {% for it in data['items'] %}
+  <section class="card report">
+    <header class="sect">
+      <h2>{{ it.name }}</h2><span class="muted small">#{{ it.item_id }}</span>
+      <span class="ilinks on"><a href="/reports?kind=timing&amp;item={{ it.item_id }}">timing</a><a href="{{ wowhead(it.item_id, (it.markets[0].game if it.markets else 'retail')) }}" target="_blank" rel="noopener">wowhead&nbsp;↗</a></span>
+    </header>
+    {% if not it.markets %}
+      <p class="muted">No changes in the last {{ data.hours }} hours (prices are stored when they change).</p>
+    {% endif %}
+    {% for m in it.markets %}
+      {% set last = m.points[-1] %}
+      <div class="pmarket">
+        <div class="row between">
+          <h3>{{ m.market }} <span class="chip">{{ m.game }}</span></h3>
+          <span class="muted small">now: min {{ money(last['min']) }} · p10 {{ money(last.p10) }} · median {{ money(last.median) }} · {{ '{:,}'.format(last.listed) }} listed</span>
+        </div>
+        <div class="pchart" data-points="{{ m.points | tojson | forceescape }}" data-hours="{{ data.hours }}"></div>
+        <details>
+          <summary class="small">{{ m.points | rejectattr('carried') | list | length }} changes</summary>
+          <div class="tscroll"><table class="sortable">
+            <thead><tr><th data-sort="num" aria-sort="descending">Changed at</th><th class="num" data-sort="num">Min</th><th class="num" data-sort="num">P10</th>
+              <th class="num" data-sort="num">Median</th><th class="num" data-sort="num">Listed</th><th class="num" data-sort="num">Sold</th></tr></thead>
+            <tbody>
+            {% for p in m.points | rejectattr('carried') | reverse %}
+            <tr><td class="ts" data-v="{{ p.t }}" data-ts="{{ p.t }}"></td>
+              <td class="num" data-v="{{ p['min'] or '' }}">{{ money(p['min']) }}</td><td class="num" data-v="{{ p.p10 or '' }}">{{ money(p.p10) }}</td>
+              <td class="num" data-v="{{ p.median or '' }}">{{ money(p.median) }}</td><td class="num" data-v="{{ p.listed }}">{{ '{:,}'.format(p.listed) }}</td>
+              <td class="num" data-v="{{ p.sold }}">{{ p.sold }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table></div>
+        </details>
+      </div>
+    {% endfor %}
+  </section>
+  {% endfor %}
 {% endif %}
 {% endblock %}
-{% block scripts %}{% if kind == 'timing' %}<script src="/static/timing.js"></script>{% endif %}{% endblock %}
+{% block scripts %}
+<script src="/static/reports.js?v={{ version }}"></script>
+{% if kind == 'timing' %}<script src="/static/timing.js?v={{ version }}"></script>{% endif %}
+{% endblock %}
