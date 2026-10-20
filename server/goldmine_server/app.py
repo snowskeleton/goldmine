@@ -189,14 +189,20 @@ REPORT_KINDS = [("crafts", "Crafts"), ("deals", "Deals"), ("flips", "Flips"), ("
 
 
 @app.get("/reports", response_class=HTMLResponse)
-def reports_page(request: Request, kind: str = "crafts", item: str = "", days: int = 7):
+def reports_page(request: Request, kind: str = "crafts", item: str = "", days: int = 7, hours: int = 72):
     user = signed_in(request)
     if not user:
         return to_signin(request)
-    output = None
+    if kind not in dict(REPORT_KINDS):
+        kind = "crafts"
+    hours = max(1, min(hours, 24 * 90))
+    data = None
     if kind in ("crafts", "deals", "flips", "summary") or (kind == "price" and item):
-        output = services.report(user.id, kind, item=item or None, days=days if kind in ("summary", "flips") else None)
-    return page(request, "reports.html", user, kinds=REPORT_KINDS, kind=kind, item=item, days=days, output=output)
+        kw = {"days": days} if kind in ("summary", "flips") else {"item": item, "hours": hours} if kind == "price" \
+            else {"history": True} if kind == "deals" else {}
+        data = services.report_data(user.id, kind, **kw)
+    return page(request, "reports.html", user, kinds=REPORT_KINDS, kind=kind, item=item, days=days, hours=hours,
+                data=data, gold=services.reports.gold, wowhead=services.reports.wowhead_url)
 
 
 @app.get("/web/timing")
@@ -467,8 +473,11 @@ def api_status(user: User = Depends(auth.client_user)):
 
 @app.get("/api/v1/report/{kind}")
 def api_report(kind: str, item: str | None = None, days: int | None = None, limit: int = 40, utc_offset: int = 0,
-               user: User = Depends(auth.client_user)):
+               format: str = "text", user: User = Depends(auth.client_user)):
+    """A report as plain text (what the desktop client prints), or with format=json as structured rows."""
     extra = {"utc_offset": max(-12, min(utc_offset, 14))} if kind in ("timing", "flips") else {}
+    if format == "json":
+        return services.report_data(user.id, kind, item=item, days=days, limit=limit, **extra)
     return PlainTextResponse(services.report(user.id, kind, item=item, days=days, limit=limit, **extra))
 
 

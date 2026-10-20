@@ -11,10 +11,10 @@ from contextlib import redirect_stdout
 
 from fastapi import HTTPException
 
-from . import db, ledger, pricing, settings, svparse
+from . import db, ledger, pricing, reports, settings, svparse
 from .collector import load_config
 
-# The report functions print to stdout; redirect_stdout is process-wide, so they run one at a time.
+# ledger.push prints to stdout; redirect_stdout is process-wide, so it runs one at a time.
 _report_lock = threading.Lock()
 
 
@@ -25,34 +25,22 @@ def cli_args(conn, **kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def run_report(user_id: int, fn, **kw) -> str:
+def report_data(user_id: int, kind: str, **kw) -> dict:
+    """A report as structured data (see reports.py)."""
+    if kind not in reports.DATA:
+        raise HTTPException(404, f"unknown report {kind!r}")
+    if kind in ("price", "timing") and not kw.get("item"):
+        raise HTTPException(400, "item is required")
     conn = db.user_conn(user_id)
     try:
-        buf = io.StringIO()
-        with _report_lock, redirect_stdout(buf):
-            fn(cli_args(conn, **kw))
-        return buf.getvalue()
+        return reports.DATA[kind](cli_args(conn, **kw))
     finally:
         conn.close()
 
 
-REPORTS = {
-    "crafts": ledger.crafts_cmd,
-    "deals": ledger.deals_cmd,
-    "summary": ledger.summary,
-    "price": ledger.price_cmd,
-    "timing": ledger.timing_cmd,
-    "flips": ledger.flips_cmd,
-}
-
-
 def report(user_id: int, kind: str, **kw) -> str:
-    fn = REPORTS.get(kind)
-    if fn is None:
-        raise HTTPException(404, f"unknown report {kind!r}")
-    if kind in ("price", "timing") and not kw.get("item"):
-        raise HTTPException(400, "item is required")
-    return run_report(user_id, fn, **kw)
+    """A report as plain text, as the desktop client prints it."""
+    return reports.text(kind, report_data(user_id, kind, **kw), cli_args(None, **kw))
 
 
 def export_csv(user_id: int, **filters) -> str:

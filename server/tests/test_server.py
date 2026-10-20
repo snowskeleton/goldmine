@@ -267,6 +267,16 @@ class ServerFlow(unittest.TestCase):
         self.assertIn("[2589] = {15, 15, ", lua)
         crafts = api.get("/api/v1/report/crafts", headers=h).text
         self.assertIn("Bolt of Linen Cloth", crafts)
+        rows = api.get("/api/v1/report/crafts?format=json", headers=h).json()["sections"][0]["rows"]
+        self.assertIn("Bolt of Linen Cloth", [r["name"] for r in rows])
+        self.assertIn("crafters", rows[0])
+        page = self.admin.get("/reports?kind=crafts").text
+        self.assertIn('<table class="sortable">', page)
+        self.assertIn("/reports?kind=price&amp;item=", page)
+        price = self.admin.get("/reports?kind=price&item=2589").text
+        self.assertIn('class="pchart"', price)
+        self.assertEqual(api.get("/api/v1/report/price?item=2589&format=json", headers=h).json()["items"][0]["item_id"],
+                         2589)
         timing = api.get("/api/v1/timing?item=2589", headers=h).json()
         self.assertEqual(timing["markets"][0]["market"], "us-testrealm")
         self.assertEqual(sum(b["sold"] for b in timing["markets"][0]["buckets"]), 20)
