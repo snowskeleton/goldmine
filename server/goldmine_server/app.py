@@ -176,8 +176,8 @@ def collect_now(request: Request, user: User = Depends(auth.require_admin)):
     return RedirectResponse("/", status_code=303)
 
 
-REPORT_KINDS = [("crafts", "Crafts"), ("deals", "Deals"), ("timing", "Timing"), ("summary", "Ledger"),
-                ("price", "Price history")]
+REPORT_KINDS = [("crafts", "Crafts"), ("deals", "Deals"), ("flips", "Flips"), ("timing", "Timing"),
+                ("summary", "Ledger"), ("price", "Price history")]
 
 
 @app.get("/reports", response_class=HTMLResponse)
@@ -186,8 +186,8 @@ def reports_page(request: Request, kind: str = "crafts", item: str = "", days: i
     if not user:
         return to_signin(request)
     output = None
-    if kind in ("crafts", "deals") or (kind == "summary") or (kind == "price" and item):
-        output = services.report(user.id, kind, item=item or None, days=days if kind == "summary" else None)
+    if kind in ("crafts", "deals", "flips", "summary") or (kind == "price" and item):
+        output = services.report(user.id, kind, item=item or None, days=days if kind in ("summary", "flips") else None)
     return page(request, "reports.html", user, kinds=REPORT_KINDS, kind=kind, item=item, days=days, output=output)
 
 
@@ -430,7 +430,7 @@ def api_status(user: User = Depends(auth.client_user)):
 @app.get("/api/v1/report/{kind}")
 def api_report(kind: str, item: str | None = None, days: int | None = None, limit: int = 40, utc_offset: int = 0,
                user: User = Depends(auth.client_user)):
-    extra = {"utc_offset": max(-12, min(utc_offset, 14))} if kind == "timing" else {}
+    extra = {"utc_offset": max(-12, min(utc_offset, 14))} if kind in ("timing", "flips") else {}
     return PlainTextResponse(services.report(user.id, kind, item=item, days=days, limit=limit, **extra))
 
 

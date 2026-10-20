@@ -42,6 +42,7 @@ REPORTS = {
     "summary": ledger.summary,
     "price": ledger.price_cmd,
     "timing": ledger.timing_cmd,
+    "flips": ledger.flips_cmd,
 }
 
 

@@ -11,9 +11,9 @@
   <input name="item" value="{{ item }}" placeholder="Item name or id" required>
   <button class="primary">Show</button>
 </form>
-{% elif kind == 'summary' %}
+{% elif kind in ('summary', 'flips') %}
 <form class="row" method="get" action="/reports">
-  <input type="hidden" name="kind" value="summary">
+  <input type="hidden" name="kind" value="{{ kind }}">
   <label class="row">Last <input type="number" name="days" value="{{ days }}" min="1" max="3650" style="width:6em"> days</label>
   <button>Update</button>
 </form>
@@ -21,6 +21,7 @@
 <p class="muted small">
   {% if kind == 'crafts' %}Profit per craft for every recipe your characters know (open each profession window in game once).
   {% elif kind == 'deals' %}Listed well below market value, and actually selling.
+  {% elif kind == 'flips' %}Commodities that keep swinging between their own lows (P25) and highs (P75), with a weekday x hour price index (UTC).
   {% elif kind == 'timing' %}When an item sells and how much is listed, by day and hour, in your local time.
   {% elif kind == 'summary' %}Your gold in and out by source, from the addon's ledger.
   {% else %}Every change in an item's price and supply over the last 24 hours.{% endif %}

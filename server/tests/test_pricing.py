@@ -168,5 +168,86 @@ class MultiGameTests(unittest.TestCase):
         self.assertEqual(local[(((g.tm_wday + 1) % 7) * 24 + g.tm_hour - 5) % 168]["sold"], 40)
 
 
+class FlipTests(unittest.TestCase):
+    """48 hourly commodity snapshots: one item swings 100c <-> 130c every 6 hours, one sits flat."""
+
+    SWING, FLAT, TIGHT = 1001, 1002, 1003
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = ledger.connect(os.path.join(self.tmp.name, "gm.sqlite"))
+        market.ensure_schema(self.conn)
+        self.conn.execute("INSERT INTO markets (name, region, namespace, kind, game, realms) "
+                          "VALUES ('us-commodities', 'us', 'dynamic-us', 'commodities', 'retail', '[]')")
+        self.start = NOW - 47 * HOUR
+        for h in range(48):
+            low = (h // 6) % 2 == 0
+            auctions = [commodity(1000 + h, self.SWING, 50, 100 if low else 130),  # sells out every hour
+                        commodity(1, self.SWING, 500 - h, 200),                     # one unit bought per hour
+                        commodity(2, self.FLAT, 500, 50),                           # never changes: no new rows
+                        commodity(2000 + h, self.TIGHT, 50, 100 if low else 102)]
+            store.store_snapshot(self.conn, "us-commodities", {"auctions": auctions}, self.start + h * HOUR)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def report(self, **kw):
+        return pricing.flip_report(self.conn, "us-commodities", days=7, min_moved_per_day=100,
+                                   min_gold_per_day=0, **kw)
+
+    def test_state_carries_forward(self):
+        snaps, series = pricing.hourly_series(self.conn, "us-commodities", self.start)
+        self.assertEqual(len(snaps), 48)
+        flat = series[(self.FLAT, 0)]
+        self.assertEqual(len(flat), 48)
+        self.assertTrue(all(state[0] == 50 and state[3] == 500 for _, state, _, _ in flat))
+
+    def test_round_trips(self):
+        flips, _, liquid = self.report()
+        self.assertEqual(liquid, 2)  # flat never sells
+        [f] = flips  # tight's 2% swing doesn't cover the AH cut
+        self.assertEqual((f.item_id, f.buy_below, f.sell_at, f.trips), (self.SWING, 100, 130, 4))
+        self.assertAlmostEqual(f.margin, (130 * 0.95 - 100) / 100)
+        self.assertEqual(f.depth_low, 50)
+        self.assertAlmostEqual(f.drift, 0)
+        days = 47 / 24
+        self.assertAlmostEqual(f.sold_per_day, 47 / days)
+        self.assertAlmostEqual(f.moved_per_day, (47 + 47 * 50) / days)
+        self.assertEqual(f.profit_per_trip, int(50 * (130 * 0.95 - 100)))
+        self.assertEqual(self.report(min_trips=5)[0], [])
+        self.assertEqual(self.report(min_margin=0.3)[0], [])
+
+    def test_weekly_index(self):
+        _, index, _ = self.report()
+        cells = {}
+        for h in range(48):
+            g = time.gmtime(self.start + h * HOUR)
+            cells[((g.tm_wday + 1) % 7, g.tm_hour)] = (h // 6) % 2 == 0
+        self.assertEqual(sum(v is not None for row in index for v in row), len(cells))
+        for (d, hr), low in cells.items():
+            if low:
+                self.assertLess(index[d][hr], 1)  # swing and tight sit below their medians
+            else:
+                self.assertEqual(index[d][hr], 1)
+
+    def test_report_text(self):
+        args = argparse.Namespace(conn=self.conn, config=os.path.join(self.tmp.name, "none.toml"), days=7,
+                                  limit=10, market=None, utc_offset=0)
+        orig = pricing.flip_report
+        pricing.flip_report = lambda conn, mkt, days: orig(conn, mkt, days=days, min_moved_per_day=100,
+                                                           min_gold_per_day=0)
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ledger.flips_cmd(args)
+        finally:
+            pricing.flip_report = orig
+        text = buf.getvalue()
+        self.assertIn("us-commodities: flips over the last 7 days (2 liquid items, 1 with", text)
+        self.assertIn(f"item {self.SWING}", text)
+        self.assertIn("Price index", text)
+
+
 if __name__ == "__main__":
     unittest.main()

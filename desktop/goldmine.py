@@ -265,6 +265,12 @@ def to_local(buckets: list, offset: int) -> list:
     return [buckets[(i - offset) % 168] for i in range(168)]
 
 
+def flips_cmd(args) -> int:
+    values = {"days": args.days, "limit": args.limit, "utc_offset": utc_offset_hours()}
+    print(server(args).text("/api/v1/report/flips", values), end="")
+    return 0
+
+
 def timing_cmd(args) -> int:
     rem = server(args)
     offset = utc_offset_hours()
@@ -498,6 +504,11 @@ def main(argv=None) -> int:
     p = sub.add_parser("deals", help="items listed well below market value")
     p.add_argument("--limit", type=int, default=30)
     p.set_defaults(fn=report_cmd("deals", limit="limit"))
+
+    p = sub.add_parser("flips", help="commodities that keep round-tripping from their lows to their highs")
+    p.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    p.add_argument("--limit", type=int, default=40)
+    p.set_defaults(fn=flips_cmd)
 
     p = sub.add_parser("price", help="recent prices for an item (id or name)")
     p.add_argument("item")

@@ -536,6 +536,55 @@ def timing_cmd(args) -> int:
     return 0
 
 
+
+def flips_cmd(args) -> int:
+    """Commodities that keep swinging from their lows to their highs, plus a weekday x hour price index."""
+    offset = getattr(args, "utc_offset", 0)
+    days = args.days or 7
+    conn = db_for(args)
+    mkts = args.market or [n for n, in conn.execute(
+        "SELECT name FROM markets WHERE kind = 'commodities' AND COALESCE(game, 'retail') = 'retail' ORDER BY name")]
+    if not mkts:
+        print("No retail commodity market configured.")
+        return 0
+    for mkt in mkts:
+        flips, index, liquid = pricing.flip_report(conn, mkt, days=days)
+        names = item_names(conn, {f.item_id for f in flips[:args.limit]}, args)
+        print(f"{mkt}: flips over the last {days:g} days ({liquid} liquid items, "
+              f"{len(flips)} with 2+ round trips and 3%+ net)")
+        if flips:
+            print(f"{'item':<30}{'buy below':>15}{'sell at':>15}{'net':>6}{'trips':>6}{'drift':>8}"
+                  f"{'depth@low':>10}{'sold/d':>9}{'moved/d':>11}{'profit/trip':>13}")
+            for f in flips[:args.limit]:
+                depth = f"{f.depth_low:,}" if f.depth_low is not None else "-"
+                print(f"{names[f.item_id][:29]:<30}{fmt_gold(f.buy_below):>15}{fmt_gold(f.sell_at):>15}"
+                      f"{f.margin:>6.0%}{f.trips:>6}{f.drift:>+8.0%}{depth:>10}{f.sold_per_day:>9,.0f}"
+                      f"{f.moved_per_day:>11,.0f}{f.profit_per_trip // 10000:>12,}g")
+            print("  buy below = P25 min price, sell at = P75; net is after the 5% AH cut. depth@low = units within"
+                  " 5% of the min while at the lows; profit/trip buys min(depth@low, moved/d).")
+        local = pricing.to_local([v for row in index for v in row], offset)
+        cells = [v for v in local if v is not None]
+        if not cells:
+            print()
+            continue
+        print(f"\n  Price index (min price / own median, median over liquid items), % vs median, UTC{offset:+d}")
+        print("  hour " + "".join(f"{d:>7}" for d in DAYS))
+        for h in range(24):
+            row = [local[d * 24 + h] for d in range(7)]
+            print(f"  {h:02d}h  " + "".join(f"{(v - 1) * 100:>+7.1f}" if v is not None else f"{'':>7}" for v in row))
+        day_avg = []
+        for d in range(7):
+            vals = [v for v in local[d * 24:(d + 1) * 24] if v is not None]
+            day_avg.append(sum(vals) / len(vals) if vals else None)
+        print("  avg  " + "".join(f"{(v - 1) * 100:>+7.1f}" if v is not None else f"{'':>7}" for v in day_avg))
+        lo, hi = min(cells), max(cells)
+        li, hi_i = local.index(lo), local.index(hi)
+        print(f"  cheapest {DAYS[li // 24]} {li % 24:02d}h ({(lo - 1) * 100:+.1f}%), dearest {DAYS[hi_i // 24]} "
+              f"{hi_i % 24:02d}h ({(hi - 1) * 100:+.1f}%): swing {(hi / lo - 1) * 100:.1f}% vs the 5% AH cut. "
+              f"US weekly reset is Tue 15h UTC.")
+        print()
+    return 0
+
 def list_realms(client, region: str, namespace: str) -> list[dict]:
     """Every realm in a namespace: connected_realm_id, slug, name, type, category."""
     page, rows = 1, []

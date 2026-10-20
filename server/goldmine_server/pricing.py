@@ -344,6 +344,122 @@ def to_local(buckets: list, utc_offset_hours: int) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Flips: commodities that swing between their own lows and highs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Flip:
+    item_id: int
+    variant: int
+    p25: int
+    p75: int
+    median: int
+    trips: int              # completed round trips: touched <= p25, later >= p75
+    drift: float            # median of the last quarter of the window vs the first quarter
+    depth_low: int | None   # median units within 5% of the min while the price was at/below p25
+    sold_per_day: float     # definite partial purchases
+    moved_per_day: float    # plus listings that vanished early (sold or cancelled: an upper bound)
+    samples: int
+
+    @property
+    def margin(self) -> float:
+        """Net return buying at p25 and selling at p75, after the AH cut."""
+        return (self.p75 * (1 - AH_CUT) - self.p25) / self.p25
+
+    @property
+    def buy_below(self) -> int:
+        return self.p25
+
+    @property
+    def sell_at(self) -> int:
+        return self.p75
+
+    @property
+    def profit_per_trip(self) -> int:
+        """Buying what sits near the lows (capped at a day's sales) and selling it at p75."""
+        units = min(self.depth_low or 0, self.moved_per_day)
+        return int(units * (self.p75 * (1 - AH_CUT) - self.p25))
+
+
+def _quantile(sorted_vals: list, q: float):
+    return sorted_vals[min(len(sorted_vals) - 1, max(0, round(q * (len(sorted_vals) - 1))))]
+
+
+def hourly_series(conn, market: str, since: int, until: int | None = None):
+    """Each item's state at every snapshot in [since, until], carried forward from its last row
+    (an item's row holds until its next one). -> (snapshot times, {(item, variant): [(t, state, sold, gone)]})
+    where state is in store.STATE_FIELDS order; sold/gone are what left the AH since the previous snapshot."""
+    times, items = replay(conn, market, since)
+    snaps = sorted((t, sid) for sid, t in times.items() if t >= since and (until is None or t <= until))
+    out = {}
+    for key, rows in items.items():
+        series, i, state = [], 0, None
+        for t, sid in snaps:
+            sold = gone = 0
+            while i < len(rows) and rows[i][0] <= sid:
+                state = rows[i][1]
+                if rows[i][0] == sid:
+                    sold, gone = rows[i][2], rows[i][3]
+                i += 1
+            if state is not None:
+                series.append((t, state, sold, gone))
+        if series:
+            out[key] = series
+    return [t for t, _ in snaps], out
+
+
+def flip_report(conn, market: str = "us-commodities", days: float = 7, now: int | None = None,
+                min_trips: int = 2, min_margin: float = 0.03, min_moved_per_day: float = 2000,
+                min_gold_per_day: int = 20_000_0000, min_presence: float = 0.9):
+    """Commodities that repeatedly round-trip between their own P25 and P75 min price.
+    Liquid = listed in at least `min_presence` of the snapshots, moving `min_moved_per_day` units and
+    `min_gold_per_day` copper a day. `now` defaults to the latest snapshot, so the window ends at the data.
+    -> (flips sorted by trips x profit per trip, 7x24 price index, number of liquid items)
+    The index is [weekday 0=Sunday][UTC hour]: each liquid item's min price over its own window median,
+    the median across items (robust to the odd item selling out and spiking; None where there were no samples)."""
+    if now is None:
+        now = conn.execute("SELECT MAX(last_modified) FROM snapshots WHERE market = ?", (market,)).fetchone()[0]
+    if now is None:
+        return [], [[None] * 24 for _ in range(7)], 0
+    since = now - int(days * 86400)
+    snaps, series = hourly_series(conn, market, since, now)
+    span_days = (snaps[-1] - snaps[0]) / 86400 if len(snaps) > 1 else 0
+    acc = [[[] for _ in range(24)] for _ in range(7)]
+    flips, liquid = [], 0
+    for (item, variant), rows in series.items():
+        priced = [(t, st[0], st[5]) for t, st, _, _ in rows if st[0] is not None and st[3] > 0]
+        if not span_days or len(priced) < max(4, min_presence * len(snaps)):
+            continue
+        sold = sum(s for t, _, s, _ in rows if t > snaps[0])
+        moved = sold + sum(g for t, _, _, g in rows if t > snaps[0])
+        prices = sorted(p for _, p, _ in priced)
+        median = _quantile(prices, 0.5)
+        if moved / span_days < min_moved_per_day or moved / span_days * median < min_gold_per_day:
+            continue
+        liquid += 1
+        for t, p, _ in priced:
+            g = time.gmtime(t)
+            acc[(g.tm_wday + 1) % 7][g.tm_hour].append(p / median)
+        p25, p75 = _quantile(prices, 0.25), _quantile(prices, 0.75)
+        trips, holding = 0, False
+        for _, p, _ in priced if p75 > p25 else ():
+            if not holding and p <= p25:
+                holding = True
+            elif holding and p >= p75:
+                trips, holding = trips + 1, False
+        q = max(1, len(priced) // 4)
+        first, last = sorted(p for _, p, _ in priced[:q]), sorted(p for _, p, _ in priced[-q:])
+        lows = sorted(d for _, p, d in priced if p <= p25 and d is not None)
+        f = Flip(item, variant, p25, p75, median, trips, _quantile(last, 0.5) / _quantile(first, 0.5) - 1,
+                 _quantile(lows, 0.5) if lows else None, sold / span_days, moved / span_days, len(priced))
+        if trips >= min_trips and f.margin >= min_margin:
+            flips.append(f)
+    flips.sort(key=lambda f: -f.trips * f.profit_per_trip)
+    index = [[_quantile(sorted(b), 0.5) if b else None for b in row] for row in acc]
+    return flips, index, liquid
+
+
+# ---------------------------------------------------------------------------
 # Export to the addon (Data.lua, loaded on login / /reload)
 # ---------------------------------------------------------------------------
 

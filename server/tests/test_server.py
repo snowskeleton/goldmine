@@ -271,6 +271,10 @@ class ServerFlow(unittest.TestCase):
         timing = api.get("/api/v1/timing?item=2589", headers=h).json()
         self.assertEqual(timing["markets"][0]["market"], "us-testrealm")
         self.assertEqual(sum(b["sold"] for b in timing["markets"][0]["buckets"]), 20)
+        flips = api.get("/api/v1/report/flips?days=3&utc_offset=-5", headers=h)
+        self.assertEqual(flips.status_code, 200)
+        self.assertIn("commodity market", flips.text)  # only a realm market here
+        self.assertEqual(self.admin.get("/reports?kind=flips").status_code, 200)
         self.assertEqual(self.admin.get("/reports?kind=crafts").status_code, 200)
         self.assertEqual(self.admin.get("/web/timing?item=2589").json()["item_id"], 2589)
 
