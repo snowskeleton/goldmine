@@ -165,9 +165,11 @@ def current_prices(conn, market: str, items) -> dict:
         WHERE c.market_id = ? AND c.item_id IN ({','.join('?' * len(ids))})
         ORDER BY c.item_id, c.variant""", (mid, *ids)).fetchall()
     names = _names(conn, ids)
+    labels = store.variant_labels(conn, [r[1] for r in rows])
     found: dict[int, list] = {}
     for item, variant, changed, *state in rows:
-        found.setdefault(item, []).append({"item_id": item, "variant": variant, "name": names.get(item),
+        found.setdefault(item, []).append({"item_id": item, "variant": variant,
+                                           "variant_label": labels[variant], "name": names.get(item),
                                            "listed": True, **dict(zip(STATE_KEYS, state)),
                                            "changed": changed, "changed_iso": iso(changed)})
     out = []
@@ -237,22 +239,25 @@ def price_history(conn, market: str, item, variant: int = 0, since: int | None =
     total = len(rows)
     page = rows[offset:offset + limit]
     nxt = offset + len(page)
-    return {"market": market, "item_id": item_id, "variant": variant, "name": _names(conn, [item_id])[item_id],
+    return {"market": market, "item_id": item_id, "variant": variant,
+            "variant_label": store.variant_labels(conn, [variant])[variant], "name": _names(conn, [item_id])[item_id],
             "since": since, "since_iso": iso(since), "until": until, "until_iso": iso(until),
             "resolution": resolution, "total": total, "offset": offset,
             "next_offset": nxt if nxt < total else None, "rows": page}
 
 
-def _price_dict(p: pricing.Price, name: str | None) -> dict:
-    return {"item_id": p.item_id, "variant": p.variant, "name": name, "market_value": p.market_value,
+def _price_dict(p: pricing.Price, name: str | None, labels: dict) -> dict:
+    return {"item_id": p.item_id, "variant": p.variant, "variant_label": labels.get(p.variant), "name": name,
+            "market_value": p.market_value,
             "current_min": p.current_min, "current_p10": p.current_p10, "buy": p.buy, "sell": p.sell,
             "sold_per_day": round(p.sold_per_day, 2), "as_of": p.as_of, "as_of_iso": iso(p.as_of)}
 
 
 def market_values(conn, market: str, items=None, hours: int = 72, min_sold: float = 0.0,
                   limit: int | None = None, offset: int = 0) -> dict:
-    """Goldmine's price model (see _table) for one market. With `items`, just those; otherwise
-    every item, busiest (sold/day) first."""
+    """Goldmine's price model (see _table) for one market. With `items`, just those, with a row
+    per pet breed / gear bonus set after the item-wide one; otherwise every item (item-wide rows
+    only), busiest (sold/day) first."""
     _market_mid(conn, market)
     hours = _clamp(hours, 1, 24 * 30, 72)
     table, end = _table(conn, market, hours)
@@ -265,14 +270,16 @@ def market_values(conn, market: str, items=None, hours: int = 72, min_sold: floa
         total, offset = len(prices), 0
     else:
         limit, offset = _clamp(limit, 1, MAX_ITEMS, 50), max(0, int(offset or 0))
-        ranked = sorted((p for p in table.values() if p.sold_per_day >= min_sold and (p.market_value or p.current_min)),
+        ranked = sorted((p for p in table.values() if p.variant >= 0 and p.sold_per_day >= min_sold
+                         and (p.market_value or p.current_min)),
                         key=lambda p: (-p.sold_per_day, p.item_id))
         total, prices = len(ranked), ranked[offset:offset + limit]
     names = _names(conn, [p.item_id for p in prices])
+    labels = store.variant_labels(conn, [p.variant for p in prices])
     nxt = offset + len(prices)
     return {"market": market, "window_hours": hours, "as_of": end, "as_of_iso": iso(end), "total": total,
             "offset": offset, "next_offset": nxt if nxt < total else None,
-            "items": [_price_dict(p, names.get(p.item_id)) for p in prices]}
+            "items": [_price_dict(p, names.get(p.item_id), labels) for p in prices]}
 
 
 def deals(conn, market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: float = 1.0,
@@ -284,13 +291,16 @@ def deals(conn, market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: 
     table, end = _table(conn, market, hours)
     found = pricing.deal_report(table, max_ratio, min_sold)
     names = _names(conn, [d.item_id for d in found[:limit]])
+    labels = store.variant_labels(conn, [d.variant for d in found[:limit]])
     return {"market": market, "window_hours": hours, "as_of": end, "as_of_iso": iso(end),
             "max_ratio": max_ratio, "min_sold": min_sold,
-            "total": len(found), "deals": [_deal_dict(d, names) for d in found[:limit]]}
+            "total": len(found),
+            "deals": [_deal_dict(d, names, labels) for d in found[:limit]]}
 
 
-def _deal_dict(d: pricing.Deal, names) -> dict:
-    return {"item_id": d.item_id, "variant": d.variant, "name": names.get(d.item_id), "current_min": d.current_min,
+def _deal_dict(d: pricing.Deal, names, labels: dict) -> dict:
+    return {"item_id": d.item_id, "variant": d.variant, "variant_label": labels.get(d.variant),
+            "name": names.get(d.item_id), "current_min": d.current_min,
             "market_value": d.market_value, "discount": round(d.discount, 3), "profit_per_unit": d.profit_per_unit,
             "sold_per_day": round(d.sold_per_day, 2)}
 

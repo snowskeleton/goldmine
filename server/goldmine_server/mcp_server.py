@@ -245,7 +245,9 @@ TOOLS = [
           ["query"], lambda conn, query, limit=None, offset=0: md.search_items(conn, query, limit, offset)),
     _tool("get_current_prices", "Current prices",
           "Latest AH state of one or more items in a market: min_price, p10, median (copper), quantity "
-          "(units listed), auctions, depth5/10/25 (units within +5/10/25% of min). listed=false means none up.",
+          "(units listed), auctions, depth5/10/25 (units within +5/10/25% of min). listed=false means none up. "
+          "One row for the item as a whole (variant 0, or the species id for pet cages), then one per pet "
+          "breed/quality/level or gear bonus set (negative variant, described by variant_label).",
           {"market": _market, "items": _items}, ["market", "items"],
           lambda conn, market, items: md.current_prices(conn, market, items)),
     _tool("get_price_history", "Price history",
@@ -253,7 +255,9 @@ TOOLS = [
           "per snapshot; hourly/daily = per UTC bucket (lowest min_price, mean p10/median/quantity, summed "
           "sold/gone, close_* = state at the bucket's last snapshot). Paginated with offset/next_offset.",
           {"market": _market, "item": {"type": ["integer", "string"], "description": "Item id or name"},
-           "variant": {"type": "integer", "default": 0, "description": "Battle pet species id, else 0"},
+           "variant": {"type": "integer", "default": 0, "description":
+                       "0 = the item as a whole (battle pet species id for pet cages). Negative = one pet "
+                       "breed/quality/level or gear bonus set, as listed with variant_label by get_current_prices"},
            "since": {"type": "integer", "description": "Unix seconds (default: until - 7 days)"},
            "until": {"type": "integer", "description": "Unix seconds (default: now)"},
            "resolution": {"type": "string", "enum": list(md.RESOLUTIONS), "default": "hourly"},
@@ -270,7 +274,8 @@ TOOLS = [
           ["market"], lambda conn, market, items=None, **kw: md.market_values(conn, market, items, **kw)),
     _tool("get_deals", "Deals",
           "Items in a market listed at or below max_ratio of their market value that sell at least min_sold "
-          "units/day. profit_per_unit is after the 5% AH cut.",
+          "units/day. profit_per_unit is after the 5% AH cut. Pets and gear are judged per breed / bonus set "
+          "(variant_label), not blended.",
           {"market": _market, "hours": _hours,
            "max_ratio": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.7},
            "min_sold": {"type": "number", "minimum": 0, "default": 1.0},

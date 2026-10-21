@@ -204,6 +204,10 @@ share item ids. In-game scans are attributed the same way, through the character
 - `item_states`: per item, a row only when its price/supply summary changes or something
   sold: min, p10, median, units listed, auctions, depth within +5/10/25%, sold, gone. Once per
   UTC day a keyframe writes every item, so windows replay from the nearest keyframe.
+  Battle pets and gear also get a separate series per configuration (negative `variant`): one per
+  pet breed + quality + level, one per gear bonus set (item level, sockets, tertiaries). The
+  item-wide series stays as it was, so tooltips and crafts are unchanged, while deals, flips
+  and the price report judge each breed or bonus set on its own.
 - Once a UTC day is over, the collector moves that day's item states and ended listings into
   compressed chunks, one per item per week (`server/goldmine_server/archive.py`): every row and
   column kept exactly, at about a seventh of the space. The hot tables hold about a day plus the

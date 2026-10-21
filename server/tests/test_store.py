@@ -116,6 +116,44 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.q("SELECT key FROM bonus_keys ORDER BY id"), [("1472,6652",), ("99",)])
         self.assertEqual(self.q("SELECT bonus FROM auctions ORDER BY auction_id"), [(1,), (1,), (2,)])
 
+    def states_now(self):
+        return {(i, v): (mn, qty) for i, v, mn, qty in self.q(
+            "SELECT item_id, variant, min_price, quantity FROM item_current")}
+
+    def test_gear_bonus_sets_get_their_own_series(self):
+        self.put([gear(1, 20, 100, [1472, 6652]), gear(2, 20, 900, [1472, 7000]), gear(3, 20, 950, [1472, 7000])], T0)
+        lo, hi = (k for k, in self.q("SELECT id FROM bonus_keys ORDER BY id"))
+        self.assertEqual(self.states_now(), {(20, 0): (100, 3), (20, -lo): (100, 1), (20, -hi): (900, 2)})
+        self.put([gear(1, 20, 100, [1472, 6652]), gear(3, 20, 950, [1472, 7000])], T0 + HOUR)  # 2 vanished early
+        gone = dict(((i, v), g) for i, v, g in self.q(
+            "SELECT item_id, variant, gone FROM item_states WHERE snap = (SELECT MAX(id) FROM snapshots)"))
+        self.assertEqual(gone, {(20, 0): 1, (20, -hi): 1})
+        self.assertEqual(store.variant_labels(self.conn, [0, -hi]), {0: None, -hi: "bonuses 1472,7000"})
+
+    def test_pet_breeds_get_their_own_series(self):
+        def pet(aid, buyout, breed, level=25):
+            return {"id": aid, "item": {"id": 82800, "pet_species_id": 1234, "pet_breed_id": breed,
+                                        "pet_quality_id": 3, "pet_level": level}, "quantity": 1, "buyout": buyout,
+                    "time_left": "VERY_LONG"}
+        self.put([pet(1, 5000, 4), pet(2, 90000, 6), pet(3, 95000, 16), pet(4, 70000, 6, level=1)], T0)
+        ids = dict(self.q("SELECT key, id FROM bonus_keys"))
+        pp, hh, hh1 = ids["pet:1234:4:3:25"], ids["pet:1234:6:3:25"], ids["pet:1234:6:3:1"]
+        self.assertEqual(len(ids), 3)  # breed 16 is H/H too (the other gender)
+        self.assertEqual(self.states_now(), {(82800, 1234): (5000, 4), (82800, -pp): (5000, 1),
+                                             (82800, -hh): (90000, 2), (82800, -hh1): (70000, 1)})
+        self.assertEqual(store.variant_labels(self.conn, [1234, -pp, -hh1]),
+                         {1234: "species 1234", -pp: "P/P rare L25", -hh1: "H/H rare L1"})
+
+    def test_listings_from_before_detail_keys_pick_them_up(self):
+        pet = {"id": 1, "item": {"id": 82800, "pet_species_id": 1234, "pet_breed_id": 4, "pet_quality_id": 3,
+                                 "pet_level": 25}, "quantity": 1, "buyout": 5000, "time_left": "VERY_LONG"}
+        self.put([pet], T0)
+        self.conn.execute("UPDATE auctions SET bonus = 0")  # as stored before pets had detail keys
+        self.put([pet], T0 + HOUR)
+        self.put([], T0 + 2 * HOUR)
+        detail = self.q("SELECT id FROM bonus_keys")[0][0]
+        self.assertEqual(self.q("SELECT gone FROM item_states WHERE variant = ? AND gone > 0", -detail), [(1,)])
+
     def test_same_snapshot_twice_is_skipped(self):
         self.put([commodity(1, 10, 5, 100)], T0)
         self.assertTrue(self.put([commodity(1, 10, 5, 100)], T0)["skipped"])

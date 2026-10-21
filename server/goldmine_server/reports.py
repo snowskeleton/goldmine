@@ -81,6 +81,11 @@ def section_title(s: dict) -> str:
     return f"== {s['game']} · {s['where']} ({', '.join(s['chars']) or 'no characters'})"
 
 
+def labelled(name: str, label: str | None) -> str:
+    """'Brown Rabbit' + 'P/P rare L25' -> 'Brown Rabbit (P/P rare L25)'."""
+    return f"{name} ({label})" if label else name
+
+
 def _window(conn, market: str, since: int) -> tuple[dict[int, int], int | None]:
     """A market's snapshots from `since` on: ({snapshot id: last_modified}, first id or None)."""
     times = dict(conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ? AND last_modified >= ?",
@@ -151,9 +156,11 @@ def deals_data(args) -> dict:
     for ex in exports:
         deals = ex.deals[:args.limit]
         names = ledger.item_names(conn, {d.item_id for d in deals}, args)
+        labels = store.variant_labels(conn, [d.variant for d in deals])
         rows = []
         for d in deals:
-            row = {"item_id": d.item_id, "variant": d.variant, "name": names[d.item_id], "listed": d.current_min,
+            row = {"item_id": d.item_id, "variant": d.variant, "name": labelled(names[d.item_id], labels[d.variant]),
+                   "listed": d.current_min,
                    "market": d.market_value, "discount": round(d.discount, 4), "profit": d.profit_per_unit,
                    "sold_per_day": round(d.sold_per_day, 2)}
             if spark:
@@ -193,7 +200,9 @@ def flips_data(args) -> dict:
     for mkt in mkts:
         flips, index, liquid = pricing.flip_report(conn, mkt, days=days)
         names = ledger.item_names(conn, {f.item_id for f in flips[:args.limit]}, args)
-        rows = [{"item_id": f.item_id, "variant": f.variant, "name": names[f.item_id], "buy_below": f.buy_below,
+        labels = store.variant_labels(conn, [f.variant for f in flips[:args.limit]])
+        rows = [{"item_id": f.item_id, "variant": f.variant, "name": labelled(names[f.item_id], labels[f.variant]),
+                 "buy_below": f.buy_below,
                  "sell_at": f.sell_at, "median": f.median, "margin": round(f.margin, 4), "trips": f.trips,
                  "drift": round(f.drift, 4), "depth_low": f.depth_low, "sold_per_day": round(f.sold_per_day, 1),
                  "moved_per_day": round(f.moved_per_day, 1), "profit_per_trip": f.profit_per_trip}
@@ -304,18 +313,20 @@ def price_data(args) -> dict:
             times, first = _window(conn, m, since)
             if first is None:
                 continue
-            pts = sorted((times[r[2]], r[3], r[4], r[5], r[6], r[11] + r[12])
-                         for r in archive.states(conn, mid, [item_id], None, first))
-            if not pts:
-                continue
-            prev = archive.last_state(conn, mid, item_id, None, first - 1)
-            rows = [{"t": since, "min": prev[3], "p10": prev[4], "median": prev[5], "listed": prev[6],
-                     "sold": 0, "carried": True}] if prev else []
-            rows += [{"t": t, "min": mn, "p10": p10, "median": med, "listed": qty, "sold": sold}
-                     for t, mn, p10, med, qty, sold in pts]
-            markets[m] = {"market": m, "game": games.get(m), "points": rows}
+            series: dict[int, list] = {}  # a chart per series: the item, then each pet breed / gear bonus set
+            for r in archive.states(conn, mid, [item_id], None, first):
+                series.setdefault(r[1], []).append((times[r[2]], r[3], r[4], r[5], r[6], r[11] + r[12]))
+            labels = store.variant_labels(conn, series)
+            for variant, pts in series.items():
+                prev = archive.last_state(conn, mid, item_id, variant, first - 1)
+                rows = [{"t": since, "min": prev[3], "p10": prev[4], "median": prev[5], "listed": prev[6],
+                         "sold": 0, "carried": True}] if prev else []
+                rows += [{"t": t, "min": mn, "p10": p10, "median": med, "listed": qty, "sold": sold}
+                         for t, mn, p10, med, qty, sold in pts]
+                name = labelled(m, labels[variant])
+                markets[m, variant] = {"market": name, "game": games.get(m), "variant": variant, "points": rows}
         out["items"].append({"item_id": item_id, "name": names.get(item_id, f"item {item_id}"),
-                             "markets": sorted(markets.values(), key=lambda x: x["market"])})
+                             "markets": [markets[k] for k in sorted(markets, key=lambda k: (k[0], k[1] < 0, k[1]))]})
     return out
 
 

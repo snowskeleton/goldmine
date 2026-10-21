@@ -85,6 +85,13 @@ class PricingTests(unittest.TestCase):
         self.assertEqual([d.item_id for d in deals], [BOLT])
         self.assertEqual(deals[0].profit_per_unit, 95 - 40)
 
+    def test_deal_report_judges_breeds_not_the_blend(self):
+        P = pricing.Price
+        prices = {(82800, 1234): P(82800, 1234, market_value=50_000, current_min=5_000, sold_per_day=3),
+                  (82800, -1): P(82800, -1, market_value=6_000, current_min=5_000, sold_per_day=2),    # cheap breed
+                  (82800, -2): P(82800, -2, market_value=90_000, current_min=40_000, sold_per_day=1)}  # a real deal
+        self.assertEqual([(d.item_id, d.variant) for d in pricing.deal_report(prices)], [(82800, -2)])
+
     def test_addon_data_roundtrip(self):
         st = pricing.MarketSet("commodities", "retail", "us", "us-commodities", ["us-commodities"])
         prices = pricing.price_table(self.conn, now=NOW)

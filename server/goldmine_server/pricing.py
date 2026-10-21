@@ -274,10 +274,19 @@ class Deal:
         return int(self.market_value * (1 - AH_CUT)) - self.current_min
 
 
+def blended(keys) -> set[tuple[int, int]]:
+    """Item-wide series (variant >= 0) of items that also have detail series (pet breeds, gear
+    bonuses): reports that rank series use the details and skip these blends of them."""
+    detailed = {item for item, variant in keys if variant < 0}
+    return {(item, variant) for item, variant in keys if variant >= 0 and item in detailed}
+
+
 def deal_report(prices: dict, max_ratio: float = 0.7, min_sold_per_day: float = 1.0) -> list[Deal]:
-    """Items listed well below market value that actually sell."""
+    """Items listed well below market value that actually sell (per pet breed / gear bonus set
+    where the item has them)."""
+    skip = blended(prices)
     deals = [Deal(p.item_id, p.variant, p.current_min, p.market_value, p.sold_per_day)
-             for p in prices.values()
+             for key, p in prices.items() if key not in skip
              if p.current_min and p.market_value and p.current_min <= p.market_value * max_ratio
              and p.sold_per_day >= min_sold_per_day]
     deals.sort(key=lambda d: -d.profit_per_unit * min(d.sold_per_day, 20))
@@ -466,7 +475,10 @@ def flip_report(conn, market: str = "us-commodities", days: float = 7, now: int 
     span_days = (snaps[-1] - snaps[0]) / 86400 if len(snaps) > 1 else 0
     acc = [[[] for _ in range(24)] for _ in range(7)]
     flips, liquid = [], 0
+    skip = blended(series)
     for (item, variant), rows in series.items():
+        if (item, variant) in skip:
+            continue
         priced = [(t, st[0], st[5]) for t, st, _, _ in rows if st[0] is not None and st[3] > 0]
         if not span_days or len(priced) < max(4, min_presence * len(snaps)):
             continue

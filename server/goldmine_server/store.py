@@ -12,6 +12,15 @@ Tables (market_id is a small integer per market, see markets.mid):
                    can be reconstructed from the nearest keyframe forward.
   item_current     latest state per item (a cache used for change detection and "now" prices).
 
+Series (the variant column of item_states / item_current):
+  variant >= 0     the item as a whole: battle pet species id for pet cages, else 0. Every
+                   listing counts here, so these series read the same as they always have.
+  variant < 0      one configuration of the item, as a separate copy: -variant is the
+                   bonus_keys id of the listing's detail key, "pet:<species>:<breed>:<quality>:<level>"
+                   (breed 3-12; the other-gender ids 13-22 count as the same breed)
+                   for battle pets or the sorted bonus list ("1472,6652") for gear. Each listing
+                   with a detail key counts in its item series and its detail series.
+
 Any past snapshot can be rebuilt exactly from auctions (open between first_snap and
 ended_snap). Sales signals per state row:
   sold   units removed from listings that are still up: a definite purchase
@@ -33,14 +42,14 @@ OUTCOME_UNKNOWN = 3      # vanished across a gap too long to judge
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bonus_keys (
     id   INTEGER PRIMARY KEY,
-    key  TEXT NOT NULL UNIQUE           -- sorted bonus list ids, e.g. "1472,6652,7756"
+    key  TEXT NOT NULL UNIQUE           -- sorted bonus list ids ("1472,6652,7756") or pet:species:breed:quality:level
 );
 CREATE TABLE IF NOT EXISTS auctions (
     market_id   INTEGER NOT NULL,
     auction_id  INTEGER NOT NULL,
     item_id     INTEGER NOT NULL,
     variant     INTEGER NOT NULL,       -- battle pet species id, else 0
-    bonus       INTEGER NOT NULL,       -- bonus_keys.id for gear variants, else 0
+    bonus       INTEGER NOT NULL,       -- bonus_keys.id of the detail key (gear bonuses, pet breed), else 0
     unit_price  INTEGER,                -- copper per unit; NULL for bid-only listings
     bid         INTEGER,
     qty_first   INTEGER NOT NULL,
@@ -130,7 +139,9 @@ class BonusKeys:
     def id_for(self, bonus_lists) -> int:
         if not bonus_lists:
             return 0
-        key = ",".join(str(b) for b in sorted(bonus_lists))
+        return self.id_for_key(",".join(str(b) for b in sorted(bonus_lists)))
+
+    def id_for_key(self, key: str) -> int:
         bid = self.cache.get(key)
         if bid is None:
             bid = self.conn.execute("INSERT INTO bonus_keys (key) VALUES (?)", (key,)).lastrowid
@@ -138,8 +149,44 @@ class BonusKeys:
         return bid
 
 
+PET_BREEDS = {3: "B/B", 4: "P/P", 5: "S/S", 6: "H/H", 7: "H/P", 8: "P/S", 9: "H/S", 10: "P/B",
+              11: "S/B", 12: "H/B"}  # 13-22 are the same breeds (the other gender), counted as 3-12
+PET_QUALITIES = {0: "poor", 1: "common", 2: "uncommon", 3: "rare", 4: "epic", 5: "legendary"}
+
+
+def detail_key(item: dict) -> str | None:
+    """What sets this listing apart from others of the same item (and pet species), or None."""
+    if item.get("pet_species_id"):
+        breed = item.get("pet_breed_id", 0)
+        breed = breed - 10 if 13 <= breed <= 22 else breed
+        return f"pet:{item['pet_species_id']}:{breed}:{item.get('pet_quality_id', 0)}:{item.get('pet_level', 0)}"
+    if item.get("bonus_lists"):
+        return ",".join(str(b) for b in sorted(item["bonus_lists"]))
+    return None
+
+
+def detail_label(key: str | None) -> str | None:
+    """'pet:1234:4:3:25' -> 'P/P rare L25'; a bonus list -> 'bonuses 1472,6652'."""
+    if not key:
+        return None
+    if key.startswith("pet:"):
+        _, _, breed, quality, level = key.split(":")
+        return (f"{PET_BREEDS.get(int(breed), f'breed {breed}')} "
+                f"{PET_QUALITIES.get(int(quality), f'quality {quality}')} L{level}")
+    return f"bonuses {key}"
+
+
+def variant_labels(conn, variants) -> dict[int, str | None]:
+    """{variant: label}: 'species N' for a pet species, the detail for a detail series, None for 0."""
+    details = [-v for v in set(variants) if v < 0]
+    keys = dict(conn.execute(f"SELECT id, key FROM bonus_keys WHERE id IN ({','.join('?' * len(details))})",
+                             details)) if details else {}
+    return {v: detail_label(keys.get(-v)) if v < 0 else f"species {v}" if v else None for v in set(variants)}
+
+
 def parse_listing(a: dict, bonus: BonusKeys) -> tuple:
-    """-> (auction_id, item_id, variant, bonus_id, unit_price, bid, quantity, time_left_code)"""
+    """-> (auction_id, item_id, variant, detail_id, unit_price, bid, quantity, time_left_code);
+    detail_id is the bonus_keys id of detail_key() (0 = none)."""
     item = a.get("item") or {}
     qty = a.get("quantity") or 1
     if "unit_price" in a:
@@ -148,7 +195,8 @@ def parse_listing(a: dict, bonus: BonusKeys) -> tuple:
         unit = a["buyout"] // qty  # realm and classic buyouts are per stack
     else:
         unit = None
-    return (a["id"], item["id"], item.get("pet_species_id") or 0, bonus.id_for(item.get("bonus_lists")),
+    key = detail_key(item)
+    return (a["id"], item["id"], item.get("pet_species_id") or 0, bonus.id_for_key(key) if key else 0,
             unit, a.get("bid"), qty, TIME_LEFT.get(a.get("time_left")))
 
 
@@ -161,15 +209,21 @@ def _percentile(pairs: list[tuple[int, int]], total: int, pct: float) -> int:
     return pairs[-1][0]
 
 
+def series_keys(item: int, variant: int, detail: int) -> tuple:
+    """The (item, variant) series a listing counts in: its item's, and its detail's if any."""
+    return ((item, variant), (item, -detail)) if detail else ((item, variant),)
+
+
 def summarize(listings: list[tuple]) -> dict[tuple[int, int], tuple]:
     """listings from parse_listing -> {(item, variant): state tuple in STATE_FIELDS order}"""
     groups: dict[tuple[int, int], list] = {}
-    for _, item, variant, _, unit, _, qty, _ in listings:
-        g = groups.setdefault((item, variant), [[], 0, 0])
-        g[1] += qty
-        g[2] += 1
-        if unit is not None:
-            g[0].append((unit, qty))
+    for _, item, variant, detail, unit, _, qty, _ in listings:
+        for key in series_keys(item, variant, detail):
+            g = groups.setdefault(key, [[], 0, 0])
+            g[1] += qty
+            g[2] += 1
+            if unit is not None:
+                g[0].append((unit, qty))
     out = {}
     for key, (pairs, quantity, auctions) in groups.items():
         if pairs:
@@ -201,14 +255,15 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
         "INSERT INTO snapshots (market, fetched_at, last_modified, auctions, keyframe) VALUES (?, ?, ?, ?, ?)",
         (market, fetched_at or int(time.time()), lm, len(listings), int(keyframe))).lastrowid
 
-    open_auctions = {aid: (item, variant, qty, tl) for aid, item, variant, qty, tl in conn.execute(
-        "SELECT auction_id, item_id, variant, qty_last, tl_last FROM auctions "
-        "WHERE market_id = ? AND ended_snap IS NULL", (mid,))}
+    open_auctions = {aid: [series_keys(item, variant, detail), qty, tl, detail]
+                     for aid, item, variant, detail, qty, tl in conn.execute(
+                         "SELECT auction_id, item_id, variant, bonus, qty_last, tl_last FROM auctions "
+                         "WHERE market_id = ? AND ended_snap IS NULL", (mid,))}
     expiring = expiring_codes(lm - prev[1]) if prev else None
 
     sold: dict[tuple[int, int], int] = {}
     gone: dict[tuple[int, int], int] = {}
-    new_rows, qty_updates, tl_updates, changes = [], [], [], []
+    new_rows, qty_updates, tl_updates, changes, detail_updates = [], [], [], [], []
     seen = set()
     for aid, item, variant, bonus_id, unit, bid, qty, tl in listings:
         seen.add(aid)
@@ -216,16 +271,20 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
         if old is None:
             new_rows.append((mid, aid, item, variant, bonus_id, unit, bid, qty, qty, tl, tl, sid))
             continue
-        _, _, old_qty, old_tl = old
+        if bonus_id != old[3]:  # listed before pets had detail keys
+            old[0] = series_keys(item, variant, bonus_id)
+            detail_updates.append((bonus_id, mid, aid))
+        keys, old_qty, old_tl, _ = old
         if qty != old_qty:
             if qty < old_qty:
-                sold[(item, variant)] = sold.get((item, variant), 0) + old_qty - qty
+                for key in keys:
+                    sold[key] = sold.get(key, 0) + old_qty - qty
             qty_updates.append((qty, tl, mid, aid))
             changes.append((mid, aid, sid, qty))
         elif tl != old_tl:
             tl_updates.append((tl, mid, aid))
     ended = []
-    for aid, (item, variant, qty, tl) in open_auctions.items():
+    for aid, (keys, qty, tl, _) in open_auctions.items():
         if aid in seen:
             continue
         if expiring is None:
@@ -234,13 +293,15 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
             outcome = OUTCOME_MAY_EXPIRE
         else:
             outcome = OUTCOME_GONE_EARLY
-            gone[(item, variant)] = gone.get((item, variant), 0) + qty
+            for key in keys:
+                gone[key] = gone.get(key, 0) + qty
         ended.append((sid, outcome, mid, aid))
 
     conn.executemany("INSERT OR REPLACE INTO auctions (market_id, auction_id, item_id, variant, bonus, unit_price, bid, "
                      "qty_first, qty_last, tl_first, tl_last, first_snap) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", new_rows)
     conn.executemany("UPDATE auctions SET qty_last = ?, tl_last = ? WHERE market_id = ? AND auction_id = ?", qty_updates)
     conn.executemany("UPDATE auctions SET tl_last = ? WHERE market_id = ? AND auction_id = ?", tl_updates)
+    conn.executemany("UPDATE auctions SET bonus = ? WHERE market_id = ? AND auction_id = ?", detail_updates)
     conn.executemany("INSERT OR REPLACE INTO auction_changes VALUES (?, ?, ?, ?)", changes)
     conn.executemany("UPDATE auctions SET ended_snap = ?, outcome = ? WHERE market_id = ? AND auction_id = ?", ended)
 
