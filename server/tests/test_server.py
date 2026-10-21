@@ -380,6 +380,12 @@ class ServerFlow(unittest.TestCase):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_report_cache_key_ignores_defaults(self):
+        from goldmine_server import services
+        web = services._cache_key(1, "deals", {"history": True})
+        self.assertEqual(services._cache_key(1, "deals", {"history": True, "limit": 40, "item": None}), web)
+        self.assertNotEqual(services._cache_key(1, "deals", {"history": True, "limit": 10}), web)
+
     def test_reports_capture_their_own_output_concurrently(self):
         import io
         import threading

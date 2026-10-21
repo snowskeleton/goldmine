@@ -103,6 +103,11 @@ class Collector:
                         account.refresh_item_info(conn, client, cfg, log=self.add)
                     except Exception as exc:  # item details are nice to have; don't fail the run
                         self.add(f"item info failed: {exc}")
+                    try:
+                        from . import services  # late, like account
+                        services.warm(log=self.add)
+                    except Exception as exc:  # requests compute what isn't warm
+                        self.add(f"warming reports failed: {exc}")
                 finally:
                     conn.close()
                 self.last_ok = errors == 0

@@ -97,7 +97,7 @@ def market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
 # result only changes when the market gets a new snapshot. Cache it per (database, market, window
 # start to the nearest STATS_BUCKET seconds, latest snapshot); concurrent requests for the same key
 # wait for one computation instead of each doing it.
-STATS_BUCKET = 600
+STATS_BUCKET = 3600  # the window start moves on hourly, like the snapshots
 STATS_CACHE_SIZE = 32
 _stats_cache: OrderedDict = OrderedDict()
 _stats_locks: dict = {}

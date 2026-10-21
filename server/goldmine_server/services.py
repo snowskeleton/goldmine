@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from fastapi import HTTPException
 
-from . import db, ledger, pricing, reports, settings, svparse
+from . import db, ledger, pricing, region, reports, settings, svparse
 from .collector import load_config
 
 class _ThreadStdout:
@@ -71,15 +71,44 @@ _report_cache: dict = {}
 _report_guard = threading.Lock()
 
 
-def data_version(user_id: int) -> tuple:
-    """Changes whenever the market DB gets a snapshot or the user's game DB is written."""
+# Reports that only read the user's own market sets (and their region baselines): new snapshots of
+# the dozens of other realms an all-realms entry collects don't change them.
+SET_REPORTS = {"crafts", "deals"}
+
+
+def set_markets(conn) -> list[str]:
+    """The markets set_reports reads for this user: their sets' markets plus region series."""
+    sets = pricing.build_sets(conn, load_config())
+    if any(st.chars for st in sets):
+        sets = [st for st in sets if st.chars]
+    names = {m for st in sets for m in st.markets}
+    names.update(n for st in sets if st.kind == "realm" for n in region.names(st.region, st.game))
+    return sorted(names)
+
+
+def data_version(user_id: int, own_sets: bool = False) -> tuple:
+    """Changes whenever the user's game DB is written or a relevant market gets a snapshot (any
+    market, or only the user's sets' with own_sets)."""
     path = db.user_db_path(user_id)
     stamps = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in (path, f"{path}-wal"))
-    conn = db.market_conn()
+    conn = db.user_conn(user_id)
     try:
-        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM snapshots").fetchone()[0], stamps
+        if own_sets:
+            names = set_markets(conn)
+            latest = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM snapshots WHERE market IN "
+                                  f"({','.join('?' * len(names))})", names).fetchone()[0]
+        else:
+            latest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM snapshots").fetchone()[0]
+        return latest, stamps
     finally:
         conn.close()
+
+
+def _cache_key(user_id: int, kind: str, kw: dict) -> tuple:
+    """Arguments left at their defaults don't make a different report (the web page and the API
+    pass different subsets)."""
+    defaults = vars(cli_args(None))
+    return user_id, kind, tuple(sorted((k, v) for k, v in kw.items() if v is not None and v != defaults.get(k)))
 
 
 def report_data(user_id: int, kind: str, **kw) -> dict:
@@ -88,8 +117,8 @@ def report_data(user_id: int, kind: str, **kw) -> dict:
         raise HTTPException(404, f"unknown report {kind!r}")
     if kind in ("price", "timing") and not kw.get("item"):
         raise HTTPException(400, "item is required")
-    key = (user_id, kind, tuple(sorted(kw.items())))
-    version = data_version(user_id)
+    key = _cache_key(user_id, kind, kw)
+    version = data_version(user_id, own_sets=kind in SET_REPORTS)
     with _report_guard:
         hit = _report_cache.get(key)
     if hit and hit[0] == version and time.time() - hit[1] < REPORT_TTL:
@@ -109,6 +138,19 @@ def report_data(user_id: int, kind: str, **kw) -> dict:
 def report(user_id: int, kind: str, **kw) -> str:
     """A report as plain text, as the desktop client prints it."""
     return reports.text(kind, report_data(user_id, kind, **kw), cli_args(None, **kw))
+
+
+def warm(log=print) -> None:
+    """Build every user's Deals, Crafts and Data.lua after a collection run, so the first person to
+    open them after new data doesn't wait for the price replay."""
+    for d in sorted(settings.USERS_DIR.glob("*/game.sqlite")):
+        user_id = int(d.parent.name)
+        try:
+            report_data(user_id, "deals", history=True)  # as the Reports page asks for it
+            report_data(user_id, "crafts")
+            addon_data(user_id)
+        except Exception as exc:  # a cache warm-up; the next request just computes it
+            log(f"warming reports for user {user_id} failed: {exc}")
 
 
 def export_csv(user_id: int, **filters) -> str:
@@ -147,10 +189,10 @@ def addon_data(user_id: int) -> bytes:
     stamp_file = user_dir / "Data.lua.stamp"
     with _install_lock:
         lock = _addon_locks.setdefault(user_id, threading.Lock())
+    latest, stamps = data_version(user_id, own_sets=True)
+    stamp = f"{latest}:{stamps}"
     conn = db.user_conn(user_id)
     try:
-        latest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM snapshots").fetchone()[0]
-        stamp = f"{latest}:{os.path.getmtime(db.user_db_path(user_id))}"
         if out.exists() and stamp_file.exists() and stamp_file.read_text() == stamp:
             return out.read_bytes()
         with lock:  # one build per user at a time; whoever waited gets the fresh file
