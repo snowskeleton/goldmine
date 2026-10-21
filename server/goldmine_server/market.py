@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 
-from . import store
+from . import archive, store
 
 TOKEN_URL = "https://oauth.battle.net/token"
 API_HOST = "https://{region}.api.blizzard.com"
@@ -177,7 +177,7 @@ class Client:
 MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT")]}
 
 
-SCHEMA_VERSION = 3  # bump when MARKET_SCHEMA / store.SCHEMA change
+SCHEMA_VERSION = 4  # bump when MARKET_SCHEMA / store.SCHEMA / archive.SCHEMA change
 
 
 def ensure_schema(conn) -> None:
@@ -193,6 +193,7 @@ def ensure_schema(conn) -> None:
     store.migrate(conn)  # before the view below, which needs item_current
     conn.executescript(MARKET_SCHEMA)
     conn.executescript(store.SCHEMA)
+    conn.executescript(archive.SCHEMA)
     conn.execute(f"PRAGMA main.user_version = {SCHEMA_VERSION}")
 
 

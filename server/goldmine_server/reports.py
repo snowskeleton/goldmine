@@ -12,7 +12,7 @@ import datetime as dt
 import json
 import time
 
-from . import ledger, pricing, store
+from . import archive, ledger, pricing, store
 from .ledger import fmt_gold
 
 DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -81,6 +81,13 @@ def section_title(s: dict) -> str:
     return f"== {s['game']} · {s['where']} ({', '.join(s['chars']) or 'no characters'})"
 
 
+def _window(conn, market: str, since: int) -> tuple[dict[int, int], int | None]:
+    """A market's snapshots from `since` on: ({snapshot id: last_modified}, first id or None)."""
+    times = dict(conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ? AND last_modified >= ?",
+                              (market, since)))
+    return times, min(times, default=None)
+
+
 def history(conn, markets: list[str], item_id: int, variant: int = 0, hours: int = 72,
             now: int | None = None) -> list[list[int]]:
     """[[time, min price], ...] over the last `hours`: the item's state changes (busiest market
@@ -88,16 +95,13 @@ def history(conn, markets: list[str], item_id: int, variant: int = 0, hours: int
     now = now or int(time.time())
     since = now - hours * 3600
     best: list = []
-    for mid in store.market_ids(conn, markets).values():
-        rows = conn.execute("""
-            SELECT s.last_modified, st.min_price FROM item_states st JOIN snapshots s ON s.id = st.snap
-            WHERE st.market_id = ? AND st.item_id = ? AND st.variant = ? AND s.last_modified >= ?
-            ORDER BY st.snap""", (mid, item_id, variant, since)).fetchall()
-        before = conn.execute("""
-            SELECT st.min_price FROM item_states st JOIN snapshots s ON s.id = st.snap
-            WHERE st.market_id = ? AND st.item_id = ? AND st.variant = ? AND s.last_modified < ?
-            ORDER BY st.snap DESC LIMIT 1""", (mid, item_id, variant, since)).fetchone()
-        pts = ([[since, before[0]]] if before and before[0] else []) + [[t, p] for t, p in rows if p]
+    for name, mid in store.market_ids(conn, markets).items():
+        times, first = _window(conn, name, since)
+        if first is None:
+            continue
+        rows = [(times[r[2]], r[3]) for r in archive.states(conn, mid, [item_id], variant, first)]
+        before = archive.last_state(conn, mid, item_id, variant, first - 1)
+        pts = ([[since, before[3]]] if before and before[3] else []) + [[t, p] for t, p in rows if p]
         if len(pts) > len(best):
             best = pts
     return best
@@ -297,19 +301,15 @@ def price_data(args) -> dict:
     for item_id in ids[:10]:
         markets = {}
         for m, mid in store.market_ids(conn).items():
-            pts = conn.execute("""
-                SELECT s.last_modified, st.min_price, st.p10, st.median, st.quantity, st.sold + st.gone
-                FROM item_states st JOIN snapshots s ON s.id = st.snap
-                WHERE st.market_id = ? AND st.item_id = ? AND s.last_modified >= ?
-                ORDER BY s.last_modified""", (mid, item_id, since)).fetchall()
+            times, first = _window(conn, m, since)
+            if first is None:
+                continue
+            pts = sorted((times[r[2]], r[3], r[4], r[5], r[6], r[11] + r[12])
+                         for r in archive.states(conn, mid, [item_id], None, first))
             if not pts:
                 continue
-            prev = conn.execute("""
-                SELECT st.min_price, st.p10, st.median, st.quantity
-                FROM item_states st JOIN snapshots s ON s.id = st.snap
-                WHERE st.market_id = ? AND st.item_id = ? AND s.last_modified < ?
-                ORDER BY s.last_modified DESC LIMIT 1""", (mid, item_id, since)).fetchone()
-            rows = [{"t": since, "min": prev[0], "p10": prev[1], "median": prev[2], "listed": prev[3],
+            prev = archive.last_state(conn, mid, item_id, None, first - 1)
+            rows = [{"t": since, "min": prev[3], "p10": prev[4], "median": prev[5], "listed": prev[6],
                      "sold": 0, "carried": True}] if prev else []
             rows += [{"t": t, "min": mn, "p10": p10, "median": med, "listed": qty, "sold": sold}
                      for t, mn, p10, med, qty, sold in pts]

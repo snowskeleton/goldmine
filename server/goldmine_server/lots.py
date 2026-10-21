@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import journal, sim
+from . import archive, journal, sim, store
 
 AH_SOURCES = ("auction_buy", "auction_sale", "auction_deposit", "auction_cancel")
 DAY = sim.DAY
@@ -61,18 +61,18 @@ def _name_ids(conn) -> dict[str, int]:
 
 def _unit_price_at(conn, item: int, ts: int) -> int | None:
     """The item's lowest listing in the last snapshot at or before ts (any configured market)."""
+    best = None  # (last_modified, min_price)
     try:
-        row = conn.execute("""
-            SELECT st.min_price FROM item_states st
-            JOIN markets m ON m.mid = st.market_id
-            JOIN snapshots s ON s.id = st.snap
-            WHERE st.item_id = ? AND st.variant = 0 AND st.min_price IS NOT NULL AND s.last_modified <= ?
-              AND m.name IN (%s)
-            ORDER BY s.last_modified DESC LIMIT 1""" % ",".join("?" * len(sim.MARKETS)),
-                           (item, ts, *sim.MARKETS)).fetchone()
-    except Exception:  # noqa: BLE001
+        for name, mid in store.market_ids(conn, list(sim.MARKETS)).items():
+            at = conn.execute("SELECT MAX(id) FROM snapshots WHERE market = ? AND last_modified <= ?",
+                              (name, ts)).fetchone()[0]
+            row = archive.last_state(conn, mid, item, 0, at, priced=True) if at is not None else None
+            if row:
+                t = conn.execute("SELECT last_modified FROM snapshots WHERE id = ?", (row[2],)).fetchone()[0]
+                best = max(best or (t, row[3]), (t, row[3]))
+    except Exception:  # noqa: BLE001 - no market tables attached
         return None
-    return row[0] if row else None
+    return best[1] if best else None
 
 
 def build(conn, realm: str | None = None, tags: dict | None = None, max_hold_days: float = 7,

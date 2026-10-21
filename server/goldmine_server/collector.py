@@ -1,4 +1,5 @@
-"""Background AH collection: a thread that runs market.collect on the configured interval."""
+"""Background AH collection: a thread that runs market.collect on the configured interval, then
+packs finished days into the compressed archive (archive.pack_due)."""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ import threading
 import time
 from collections import deque
 
-from . import db, market, settings
+from . import archive, db, market, settings
 
 
 def load_config() -> dict:
@@ -85,6 +86,10 @@ class Collector:
                 try:
                     client = market.Client(api["client_id"], api["client_secret"], cache_dir=settings.CACHE_DIR)
                     errors = market.collect(conn, client, cfg, log=self.add)
+                    try:
+                        archive.pack_due(conn, log=self.add)
+                    except Exception as exc:  # the rows stay in the hot tables; next run retries
+                        self.add(f"archiving failed: {exc}")
                     try:
                         from . import account  # late: account -> marketdata -> services -> collector
                         account.refresh_item_info(conn, client, cfg, log=self.add)

@@ -302,15 +302,9 @@ def window_start_snapshot(conn, market: str, since: int) -> int | None:
 
 def listings_at(conn, market: str, snapshot_id: int) -> list[tuple]:
     """Reconstruct the listings that were up in a given snapshot (exact, from lifecycles)."""
-    mid = market_id(conn, market)
-    return conn.execute("""
-        SELECT a.auction_id, a.item_id, a.variant, a.unit_price,
-               COALESCE((SELECT c.quantity FROM auction_changes c
-                         WHERE c.market_id = a.market_id AND c.auction_id = a.auction_id AND c.snap <= ?
-                         ORDER BY c.snap DESC LIMIT 1), a.qty_first) AS quantity
-        FROM auctions a
-        WHERE a.market_id = ? AND a.first_snap <= ? AND (a.ended_snap IS NULL OR a.ended_snap > ?)
-        ORDER BY a.auction_id""", (snapshot_id, mid, snapshot_id, snapshot_id)).fetchall()
+    from . import archive  # late: archive imports store
+    return [(a[1], a[0], a[2], a[4], archive.quantity_at(a, snapshot_id))
+            for a in archive.auctions(conn, market_id(conn, market), up_at=snapshot_id)]
 
 
 def migrate(conn) -> None:

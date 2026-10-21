@@ -1,7 +1,9 @@
-"""Admin commands that use the server's Blizzard API credentials (the client has none).
+"""Admin commands: ones that use the server's Blizzard API credentials (the client has none),
+and archive maintenance.
 
   python -m goldmine_server.cli probe us              # which API namespaces exist (find Forever's on launch day)
   python -m goldmine_server.cli realms us dynamic-us  # connected realms in a namespace
+  python -m goldmine_server.cli pack --vacuum         # archive finished days now, then shrink the file
 
 In Docker: docker compose -f server/docker-compose.yml exec goldmine python -m goldmine_server.cli probe us
 """
@@ -11,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import ledger, market, settings
+from . import archive, db, ledger, market, settings
 
 
 def client() -> market.Client:
@@ -41,6 +43,21 @@ def realms(args) -> int:
     return 0
 
 
+def pack(args) -> int:
+    """Pack finished days into the archive now (the collector does this after each run). VACUUM
+    hands the space the hot tables freed back to the filesystem; SQLite reuses it otherwise."""
+    conn = db.market_conn()
+    try:
+        archive.pack_due(conn)
+        if args.vacuum:
+            before = settings.MARKET_DB.stat().st_size
+            conn.execute("VACUUM")
+            print(f"vacuum: {before / 1e6:.1f} MB -> {settings.MARKET_DB.stat().st_size / 1e6:.1f} MB")
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -52,6 +69,9 @@ def main(argv=None) -> int:
     p.add_argument("region")
     p.add_argument("namespace")
     p.set_defaults(fn=realms)
+    p = sub.add_parser("pack", help="archive finished days of AH history into compressed chunks")
+    p.add_argument("--vacuum", action="store_true", help="then rewrite the database file to reclaim the space")
+    p.set_defaults(fn=pack)
     args = ap.parse_args(argv)
     return args.fn(args)
 

@@ -25,7 +25,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from . import store
+from . import archive, store
 
 AH_CUT = 0.05  # auction house takes 5% of the sale price
 
@@ -60,9 +60,7 @@ def replay(conn, market: str, since: int):
         return {}, {}
     times = dict(conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ? AND id >= ?", (market, start)))
     items: dict[tuple[int, int], list] = {}
-    for item, variant, snap, *rest in conn.execute(f"""
-            SELECT item_id, variant, snap, {', '.join(store.STATE_FIELDS)}, sold, gone
-            FROM item_states WHERE market_id = ? AND snap >= ? ORDER BY item_id, variant, snap""", (mid, start)):
+    for item, variant, snap, *rest in archive.states(conn, mid, lo=start):
         items.setdefault((item, variant), []).append((snap, tuple(rest[:8]), rest[8], rest[9]))
     return times, items
 
@@ -348,9 +346,7 @@ def timing(conn, item_id: int, variant: int = 0, markets: list[str] | None = Non
     0 = Sunday 00h). Returns {market: [168 dicts: samples, sold, sold_avg, p10_avg, min, qty_avg]}."""
     out = {}
     for mkt, mid in store.market_ids(conn, markets).items():
-        states = conn.execute(f"""
-            SELECT snap, {', '.join(store.STATE_FIELDS)}, sold, gone FROM item_states
-            WHERE market_id = ? AND item_id = ? AND variant = ? ORDER BY snap""", (mid, item_id, variant)).fetchall()
+        states = [r[2:] for r in archive.states(conn, mid, [item_id], variant)]
         if not states:
             continue
         snaps = store.snapshot_times(conn, mkt, since)

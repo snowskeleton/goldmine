@@ -19,7 +19,7 @@ from urllib.request import pathname2url
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import auth, db, ledger, pricing, services, settings, store
+from . import archive, auth, db, ledger, pricing, services, settings, store
 from .auth import User
 
 MAX_ITEMS = 100          # items per current/values request
@@ -219,13 +219,9 @@ def price_history(conn, market: str, item, variant: int = 0, since: int | None =
                          "ORDER BY id", (market, since, until)).fetchall()
     rows: list[dict] = []
     if snaps:
-        cols = f"snap, {', '.join(STATE_KEYS)}, sold, gone"
-        prior = conn.execute(f"SELECT {cols} FROM item_states WHERE market_id = ? AND item_id = ? AND variant = ? "
-                             "AND snap < ? ORDER BY snap DESC LIMIT 1", (mid, item_id, variant, snaps[0][0])).fetchone()
-        states = conn.execute(f"SELECT {cols} FROM item_states WHERE market_id = ? AND item_id = ? AND variant = ? "
-                              "AND snap BETWEEN ? AND ? ORDER BY snap",
-                              (mid, item_id, variant, snaps[0][0], snaps[-1][0])).fetchall()
-        state, i = prior, 0
+        prior = archive.last_state(conn, mid, item_id, variant, snaps[0][0] - 1)
+        states = [r[2:] for r in archive.states(conn, mid, [item_id], variant, snaps[0][0], snaps[-1][0])]
+        state, i = prior[2:] if prior else None, 0
         for sid, lm in snaps:
             changed = False
             while i < len(states) and states[i][0] <= sid:

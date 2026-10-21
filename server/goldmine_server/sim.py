@@ -57,7 +57,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from . import pricing
+from . import archive, pricing
 
 DAY, HOUR = 86400, 3600
 AH_CUT = pricing.AH_CUT
@@ -144,6 +144,7 @@ class History:
         self.series: dict[str, dict[int, Series]] = {}
         self._events: dict[tuple[str, int], tuple[list, list]] = {}
         self._listings: dict[tuple[str, int, int], list] = {}
+        self._chunks: dict = {}  # decoded auction chunks, shared by listings() and events()
         self._cv: dict = {}
         items = None if items is None else sorted({int(i) for i in items})
         mids = dict(conn.execute("SELECT name, mid FROM markets WHERE mid IS NOT NULL"))
@@ -176,21 +177,16 @@ class History:
         self.snap_t[market] = [t for _, t in snaps]
         sid_t = self.sid_t[market] = dict(snaps)
         last_sid = max(sid_t)
-        cols = "item_id, snap, min_price, p10, quantity, sold, gone"
-        base = f"SELECT {cols} FROM item_states WHERE market_id = ? AND variant = 0 AND snap >= ? AND snap <= ?"
-        if items is not None:
-            rows = []
-            for i in range(0, len(items), 500):
-                chunk = items[i:i + 500]
-                rows += self.conn.execute(base + f" AND item_id IN ({','.join('?' * len(chunk))})",
-                                          (mid, start, last_sid, *chunk)).fetchall()
-            rows.sort(key=lambda r: (r[0], r[1]))
-        else:
+        # (item_id, snap, min_price, p10, quantity, sold, gone)
+        rows = [(r[0], r[2], r[3], r[4], r[6], r[11], r[12])
+                for r in archive.states(self.conn, mid, items, 0, start, last_sid)]
+        if items is None:
             days = max((snaps[-1][1] - snaps[0][1]) / DAY, 1 / 24)
-            rows = self.conn.execute(
-                base + " AND item_id IN (SELECT item_id FROM item_states WHERE market_id = ? AND variant = 0 "
-                "AND snap > ? AND snap <= ? GROUP BY item_id HAVING SUM(sold + gone) >= ?) ORDER BY item_id, snap",
-                (mid, start, last_sid, mid, start, last_sid, min_moved_per_day * days)).fetchall()
+            moved: dict[int, int] = {}
+            for item, snap, *_, sold, gone in rows:
+                if snap > start:
+                    moved[item] = moved.get(item, 0) + sold + gone
+            rows = [r for r in rows if moved.get(r[0], 0) >= min_moved_per_day * days]
         out: dict[int, Series] = {}
         cur, buf = None, []
         for item, snap, mn, p10, qty, sold, gone in rows:
@@ -245,15 +241,9 @@ class History:
         """[(auction_id, unit_price, quantity)] up in snapshot `sid`, cheapest first (exact, from lifecycles)."""
         key = (market, item, sid)
         if key not in self._listings:
-            rows = self.conn.execute("""
-                SELECT a.auction_id, a.unit_price,
-                       COALESCE((SELECT c.quantity FROM auction_changes c
-                                 WHERE c.market_id = a.market_id AND c.auction_id = a.auction_id AND c.snap <= ?
-                                 ORDER BY c.snap DESC LIMIT 1), a.qty_first)
-                FROM auctions a
-                WHERE a.item_id = ? AND a.market_id = ? AND a.variant = 0 AND a.unit_price IS NOT NULL
-                  AND a.first_snap <= ? AND (a.ended_snap IS NULL OR a.ended_snap > ?)""",
-                (sid, item, self.mids[market], sid, sid)).fetchall()
+            rows = [(a[1], a[4], archive.quantity_at(a, sid))
+                    for a in archive.auctions(self.conn, self.mids[market], item, sid, self._chunks)
+                    if a[2] == 0 and a[4] is not None]
             self._listings[key] = sorted(rows, key=lambda r: (r[1], r[0]))
         return self._listings[key]
 
@@ -266,22 +256,18 @@ class History:
             return self._events[key]
         mid, sid_t = self.mids[market], self.sid_t[market]
         out = []
-        prev_aid = prev_q = None
-        for aid, price, q0, snap, q in self.conn.execute("""
-                SELECT a.auction_id, a.unit_price, a.qty_first, c.snap, c.quantity
-                FROM auctions a JOIN auction_changes c ON c.market_id = a.market_id AND c.auction_id = a.auction_id
-                WHERE a.item_id = ? AND a.market_id = ? AND a.variant = 0 AND a.unit_price IS NOT NULL
-                ORDER BY a.auction_id, c.snap""", (item, mid)):
-            if aid != prev_aid:
-                prev_aid, prev_q = aid, q0
-            if q < prev_q and snap in sid_t:
-                out.append((sid_t[snap], price, prev_q - q))
-            prev_q = q
+        listings = [a for a in archive.auctions(self.conn, mid, item, cache=self._chunks)
+                    if a[2] == 0 and a[4] is not None]
+        for a in listings:
+            price, prev_q = a[4], a[6]
+            for snap, q in a[-1]:
+                if q < prev_q and snap in sid_t:
+                    out.append((sid_t[snap], price, prev_q - q))
+                prev_q = q
         if self.gone_weight > 0:
-            for price, q, snap in self.conn.execute(
-                    "SELECT unit_price, qty_last, ended_snap FROM auctions WHERE item_id = ? AND market_id = ? "
-                    "AND variant = 0 AND outcome = 1 AND unit_price IS NOT NULL", (item, mid)):
-                if snap in sid_t:
+            for a in listings:
+                price, q, snap = a[4], a[7], a[11]
+                if a[12] == 1 and snap in sid_t:
                     out.append((sid_t[snap], price, q * self.gone_weight))
         out.sort()
         self._events[key] = ([e[0] for e in out], out)

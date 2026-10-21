@@ -21,6 +21,7 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     ledger.py     per-user game data: schema, SavedVariables import, text reports, Data.lua
     market.py     Blizzard API client + AH snapshot collector
     store.py      change-based AH storage (listing lifecycles + item states written on change)
+    archive.py    finished days of that history packed into compressed per-item weekly chunks
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
     marketdata.py read-only market data as JSON (/api/v1/market/*)
     account.py    read-only account state for the trader: balances, inventory, owned auctions,
@@ -203,7 +204,14 @@ share item ids. In-game scans are attributed the same way, through the character
 - `item_states`: per item, a row only when its price/supply summary changes or something
   sold: min, p10, median, units listed, auctions, depth within +5/10/25%, sold, gone. Once per
   UTC day a keyframe writes every item, so windows replay from the nearest keyframe.
-- Measured on retail US (commodities + 2 realms): about 3.2 MB per hour of new data.
+- Once a UTC day is over, the collector moves that day's item states and ended listings into
+  compressed chunks, one per item per week (`server/goldmine_server/archive.py`): every row and
+  column kept exactly, at about a seventh of the space. The hot tables hold about a day plus the
+  listings still up; readers merge the two. `python -m goldmine_server.cli pack --vacuum` packs
+  now and shrinks the file (SQLite otherwise reuses the freed space).
+- Measured on retail US (commodities + 2 realms): about 3.2 MB per hour of new data before
+  packing, about 0.4 MB per hour once packed. Two days of history went from 140 MB to 53 MB,
+  44 MB of which is the listings currently up (a fixed size, not growth).
 
 `goldmine.py timing <item>` (or Reports → Timing) replays item states into an hour-of-week
 heatmap of sales and supply, in local time.
