@@ -22,6 +22,7 @@ server/           Goldmine server (Docker): does all the work and stores everyth
     market.py     Blizzard API client + AH snapshot collector
     store.py      change-based AH storage (listing lifecycles + item states written on change)
     archive.py    finished days of that history packed into compressed per-item weekly chunks
+    region.py     region baselines: each item's price across realms, adjusted for realm size
     pricing.py    market value / buy / sell prices, craft + deal reports, Data.lua writer
     marketdata.py read-only market data as JSON (/api/v1/market/*)
     account.py    read-only account state for the trader: balances, inventory, owned auctions,
@@ -233,6 +234,17 @@ from the realm list (re-read every 6 hours), and removing a realm's own entry ha
 all-realms entry under the same name. Its pricing switch covers all of its realms; reports only
 use realms you have characters on either way. US retail is 83 connected realms, about 2.2M
 listings, roughly 50 MB of downloads an hour.
+
+**Region baseline** (`server/goldmine_server/region.py`). Bigger auction houses list much cheaper:
+across US retail, doubling a realm's listings takes its prices to ~70%, and FULL realms list at
+~0.6x the region median. So after each collection run, every item's price on every realm is
+rescaled to a typical realm size and the median taken (`us-retail-region`; the plain median,
+TSM's "region price", is `us-retail-region-raw`). For any realm that gives "what other realms
+charge, at this realm's size". Deals keep using your realm's own history but each gets a region
+verdict: *confirmed* (cheap elsewhere too), *normal* (the usual price elsewhere, so it's your
+realm's own history that's off) or *partial*. Price history charts draw the region line and,
+with "Compare with", another realm's price rescaled to yours; the axis goes logarithmic when the
+lines are far apart. The size effect is re-fitted from the data on every rollup.
 
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is

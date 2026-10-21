@@ -114,8 +114,16 @@
     svg.addEventListener("mouseleave", () => { dot.setAttribute("visibility", "hidden"); hideTip(); });
   });
 
-  // ---- price history: min / p10 / median step lines, units listed below (its own scale), crosshair
+  // ---- price history: min / p10 / median step lines, units listed below (its own scale), crosshair.
+  // Realm charts can add overlays (data-overlays): the region baseline sized like this realm, the
+  // plain region median, another realm. Click a legend entry to show or hide its line. When the
+  // lines are far apart (one 50x the other), the price axis goes logarithmic so both stay readable.
   const SERIES = [["min", "Lowest", "var(--s1)"], ["p10", "P10", "var(--s2)"], ["median", "Median", "var(--s3)"]];
+  const OVERLAY_STYLE = {
+    region: { c: "var(--s4)", w: 2.5, dash: "", on: true },
+    region_raw: { c: "var(--s4)", w: 1.5, dash: "2 3", on: false },
+    compare: { c: "var(--s5)", w: 2, dash: "6 4", on: true },
+  };
   function niceTicks(lo, hi, n) {
     const span = hi - lo || Math.abs(hi) || 1;
     const step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
@@ -124,78 +132,118 @@
     for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
     return out;
   }
+  function logTicks(lo, hi) {
+    const out = [], mults = Math.log10(hi / lo) > 3 ? [1] : [1, 2, 5];
+    for (let e = Math.floor(Math.log10(lo)); 10 ** e <= hi; e++)
+      for (const m of mults) { const v = m * 10 ** e; if (v >= lo && v <= hi) out.push(v); }
+    return out;
+  }
   document.querySelectorAll(".pchart").forEach((box) => {
     const pts = JSON.parse(box.dataset.points);
     if (!pts.length) return;
+    const lines = SERIES.map(([k, label, c]) => ({ k, label, c, w: 2, dash: "", on: true }))
+      .concat(JSON.parse(box.dataset.overlays || "[]").map(([k, label]) => ({ k, label, ...OVERLAY_STYLE[k] })));
     const legend = document.createElement("div");
     legend.className = "legend-row";
-    legend.innerHTML = SERIES.map(([, label, c]) => `<span><span class="sw" style="background:${c}"></span>${label}</span>`).join("") +
-      `<span><span class="sw" style="background:var(--bar);height:8px"></span>Units listed</span>`;
     box.before(legend);
-    const W = Math.max(320, box.clientWidth), H = 260, top = 8, priceH = 170, gap = 18, qtyH = 50, left = 64, right = 12;
-    const tNow = Date.now() / 1000;
-    const t0 = pts[0].t, t1 = Math.max(tNow, pts[pts.length - 1].t + 1);
-    const vals = pts.flatMap((p) => SERIES.map(([k]) => p[k]).filter((v) => v != null));
-    let lo = Math.min(...vals), hi = Math.max(...vals);
-    const padv = (hi - lo) * 0.08 || hi * 0.05 || 1;
-    lo = Math.max(0, lo - padv); hi += padv;
-    const qmax = Math.max(1, ...pts.map((p) => p.listed));
-    const x = (t) => left + ((t - t0) / (t1 - t0)) * (W - left - right);
-    const y = (v) => top + (1 - (v - lo) / (hi - lo)) * priceH;
-    const qy0 = top + priceH + gap + qtyH, qy = (q) => qy0 - (q / qmax) * qtyH;
-    const svg = el("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Price history chart" }, box);
-    const axis = el("g", { class: "axis" }, svg);
-    for (const v of niceTicks(lo, hi, 4)) {
-      el("line", { x1: left, x2: W - right, y1: y(v), y2: y(v) }, axis);
-      el("text", { x: left - 8, y: y(v) + 4, "text-anchor": "end" }, axis).textContent = money(Math.round(v));
-    }
-    el("line", { x1: left, x2: W - right, y1: qy0, y2: qy0 }, axis);
-    el("text", { x: left - 8, y: qy(qmax) + 8, "text-anchor": "end" }, axis).textContent = qmax.toLocaleString();
-    // time ticks: midnights (or every 6h for short windows)
-    const spanH = (t1 - t0) / 3600, stepH = spanH <= 36 ? 6 : spanH <= 96 ? 24 : spanH <= 240 ? 48 : 96;
-    const start = new Date(t0 * 1000); start.setMinutes(0, 0, 0);
-    while (start.getHours() % Math.min(stepH, 24) !== 0 || (stepH >= 24 && start.getHours() !== 0)) start.setHours(start.getHours() + 1);
-    for (let d = new Date(start); d / 1000 <= t1; d.setHours(d.getHours() + stepH)) {
-      const tx = x(d / 1000);
-      el("line", { x1: tx, x2: tx, y1: top, y2: qy0, "stroke-dasharray": "2 4" }, axis);
-      el("text", { x: tx, y: H - 2, "text-anchor": "middle" }, axis).textContent = stepH >= 24
-        ? d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" })
-        : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    }
-    // listed units: step area
-    const qpts = pts.map((p) => [x(p.t), qy(p.listed)]);
-    const qd = stepPath(qpts, W - right);
-    el("path", { d: `${qd}V${qy0}H${qpts[0][0]}Z`, fill: "var(--bar)", opacity: 0.7 }, svg);
-    for (const [k, , c] of SERIES) {
-      const sp = pts.filter((p) => p[k] != null).map((p) => [x(p.t), y(p[k])]);
-      el("path", { d: stepPath(sp, W - right), fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round" }, svg);
-    }
-    // crosshair
-    const cross = el("line", { y1: top, y2: qy0, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
-    const dots = SERIES.map(([, , c]) => el("circle", { r: 4, fill: c, stroke: "var(--card)", "stroke-width": 2, visibility: "hidden" }, svg));
-    const hit = el("rect", { x: left, y: top, width: W - left - right, height: qy0 - top, fill: "transparent" }, svg);
-    hit.addEventListener("mousemove", (e) => {
-      const r = svg.getBoundingClientRect();
-      const px = (e.clientX - r.left) * (W / r.width);
-      const t = t0 + ((px - left) / (W - left - right)) * (t1 - t0);
-      let i = 0;
-      while (i + 1 < pts.length && pts[i + 1].t <= t) i++;
-      const p = pts[i];
-      cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
-      SERIES.forEach(([k], j) => {
-        if (p[k] == null) return dots[j].setAttribute("visibility", "hidden");
-        dots[j].setAttribute("cx", px); dots[j].setAttribute("cy", y(p[k])); dots[j].setAttribute("visibility", "visible");
+    const drawLegend = () => {
+      legend.innerHTML = lines.map((l, i) => `<button type="button" class="lg${l.on ? "" : " off"}" data-i="${i}">` +
+        `<span class="sw" style="background:${l.c}${l.dash ? ";opacity:.6" : ""}"></span>${esc(l.label)}</button>`).join("") +
+        `<span><span class="sw" style="background:var(--bar);height:8px"></span>Units listed</span>`;
+    };
+    legend.addEventListener("click", (e) => {
+      const b = e.target.closest("button.lg");
+      if (!b) return;
+      lines[+b.dataset.i].on = !lines[+b.dataset.i].on;
+      drawLegend();
+      draw();
+    });
+    drawLegend();
+    function draw() {
+      box.replaceChildren();
+      const shown = lines.filter((l) => l.on);
+      const W = Math.max(320, box.clientWidth), H = 260, top = 8, priceH = 170, gap = 18, qtyH = 50, left = 64, right = 12;
+      const tNow = Date.now() / 1000;
+      const t0 = pts[0].t, t1 = Math.max(tNow, pts[pts.length - 1].t + 1);
+      const vals = pts.flatMap((p) => shown.map((l) => p[l.k]).filter((v) => v != null && v > 0));
+      if (!vals.length) vals.push(1);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      const logScale = hi / lo > 20;
+      let y, ticks;
+      if (logScale) {
+        lo /= 1.15; hi *= 1.15;
+        const L0 = Math.log(lo), L1 = Math.log(hi);
+        y = (v) => top + (1 - (Math.log(Math.max(v, lo)) - L0) / (L1 - L0)) * priceH;
+        ticks = logTicks(lo, hi);
+      } else {
+        const padv = (hi - lo) * 0.08 || hi * 0.05 || 1;
+        lo = Math.max(0, lo - padv); hi += padv;
+        y = (v) => top + (1 - (v - lo) / (hi - lo)) * priceH;
+        ticks = niceTicks(lo, hi, 4);
+      }
+      const qmax = Math.max(1, ...pts.map((p) => p.listed));
+      const x = (t) => left + ((t - t0) / (t1 - t0)) * (W - left - right);
+      const qy0 = top + priceH + gap + qtyH, qy = (q) => qy0 - (q / qmax) * qtyH;
+      const svg = el("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Price history chart" }, box);
+      const axis = el("g", { class: "axis" }, svg);
+      for (const v of ticks) {
+        el("line", { x1: left, x2: W - right, y1: y(v), y2: y(v) }, axis);
+        el("text", { x: left - 8, y: y(v) + 4, "text-anchor": "end" }, axis).textContent = money(Math.round(v));
+      }
+      if (logScale) el("text", { x: W - right, y: top + 10, "text-anchor": "end" }, axis).textContent = "log scale";
+      el("line", { x1: left, x2: W - right, y1: qy0, y2: qy0 }, axis);
+      el("text", { x: left - 8, y: qy(qmax) + 8, "text-anchor": "end" }, axis).textContent = qmax.toLocaleString();
+      // time ticks: midnights (or every 6h for short windows)
+      const spanH = (t1 - t0) / 3600, stepH = spanH <= 36 ? 6 : spanH <= 96 ? 24 : spanH <= 240 ? 48 : 96;
+      const start = new Date(t0 * 1000); start.setMinutes(0, 0, 0);
+      while (start.getHours() % Math.min(stepH, 24) !== 0 || (stepH >= 24 && start.getHours() !== 0)) start.setHours(start.getHours() + 1);
+      for (let d = new Date(start); d / 1000 <= t1; d.setHours(d.getHours() + stepH)) {
+        const tx = x(d / 1000);
+        el("line", { x1: tx, x2: tx, y1: top, y2: qy0, "stroke-dasharray": "2 4" }, axis);
+        el("text", { x: tx, y: H - 2, "text-anchor": "middle" }, axis).textContent = stepH >= 24
+          ? d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" })
+          : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      }
+      // listed units: step area
+      const qpts = pts.map((p) => [x(p.t), qy(p.listed)]);
+      const qd = stepPath(qpts, W - right);
+      el("path", { d: `${qd}V${qy0}H${qpts[0][0]}Z`, fill: "var(--bar)", opacity: 0.7 }, svg);
+      for (const l of shown) {
+        const sp = pts.filter((p) => p[l.k] != null && p[l.k] > 0).map((p) => [x(p.t), y(p[l.k])]);
+        el("path", { d: stepPath(sp, W - right), fill: "none", stroke: l.c, "stroke-width": l.w, "stroke-linejoin": "round",
+                     "stroke-dasharray": l.dash }, svg);
+      }
+      // crosshair
+      const cross = el("line", { y1: top, y2: qy0, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
+      const dots = shown.map((l) => el("circle", { r: 4, fill: l.c, stroke: "var(--card)", "stroke-width": 2, visibility: "hidden" }, svg));
+      const hit = el("rect", { x: left, y: top, width: W - left - right, height: qy0 - top, fill: "transparent" }, svg);
+      hit.addEventListener("mousemove", (e) => {
+        const r = svg.getBoundingClientRect();
+        const px = (e.clientX - r.left) * (W / r.width);
+        const t = t0 + ((px - left) / (W - left - right)) * (t1 - t0);
+        let i = 0;
+        while (i + 1 < pts.length && pts[i + 1].t <= t) i++;
+        const p = pts[i];
+        cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+        shown.forEach((l, j) => {
+          if (p[l.k] == null) return dots[j].setAttribute("visibility", "hidden");
+          dots[j].setAttribute("cx", px); dots[j].setAttribute("cy", y(p[l.k])); dots[j].setAttribute("visibility", "visible");
+        });
+        const extra = (k) => k === "compare" && p.compare_raw != null ? ` <span class="muted">(listed ${money(p.compare_raw)})</span>`
+          : k === "region" && p.realms ? ` <span class="muted">(${p.realms} realms)</span>` : "";
+        const rows = lines.filter((l) => p[l.k] != null).map((l) =>
+          `<tr><td><span class="k" style="background:${l.c}"></span>${esc(l.label)}</td><td><b>${money(p[l.k])}</b>${extra(l.k)}</td></tr>`).join("");
+        showTip(`<div class="t">${esc(when(t))}</div><table>${rows}<tr><td>Listed</td><td>${p.listed.toLocaleString()}</td></tr>` +
+                `${p.carried ? "" : `<tr><td>Sold since prior</td><td>${p.sold}</td></tr>`}</table>` +
+                `<div class="t">since ${esc(when(p.t))}${p.carried ? " (before window)" : ""}</div>`, e.clientX, e.clientY);
       });
-      const rows = SERIES.map(([k, label, c]) => `<tr><td><span class="k" style="background:${c}"></span>${label}</td><td><b>${money(p[k])}</b></td></tr>`).join("");
-      showTip(`<div class="t">${esc(when(t))}</div><table>${rows}<tr><td>Listed</td><td>${p.listed.toLocaleString()}</td></tr>` +
-              `${p.carried ? "" : `<tr><td>Sold since prior</td><td>${p.sold}</td></tr>`}</table>` +
-              `<div class="t">since ${esc(when(p.t))}${p.carried ? " (before window)" : ""}</div>`, e.clientX, e.clientY);
-    });
-    hit.addEventListener("mouseleave", () => {
-      cross.setAttribute("visibility", "hidden");
-      dots.forEach((d) => d.setAttribute("visibility", "hidden"));
-      hideTip();
-    });
+      hit.addEventListener("mouseleave", () => {
+        cross.setAttribute("visibility", "hidden");
+        dots.forEach((d) => d.setAttribute("visibility", "hidden"));
+        hideTip();
+      });
+    }
+    draw();
   });
 
   // ---- flips price index: UTC [weekday][hour] ratios, rotated into local time; diverging blue (cheap) / red (dear)

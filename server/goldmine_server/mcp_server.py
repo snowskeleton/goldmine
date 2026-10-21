@@ -250,6 +250,15 @@ TOOLS = [
           "breed/quality/level or gear bonus set (negative variant, described by variant_label).",
           {"market": _market, "items": _items}, ["market", "items"],
           lambda conn, market, items: md.current_prices(conn, market, items)),
+    _tool("get_region_prices", "Region prices",
+          "One realm's prices next to the rest of the region's for the same items. Bigger auction houses list "
+          "much cheaper (US retail: doubling a realm's listings takes prices to ~70%), so region_expected is "
+          "what other realms charge adjusted to this realm's size; region_raw is their plain median (TSM's "
+          "region price); region_realms how many realms list it. ratio = this realm's p10 / region_expected: "
+          "about 1 is normal here, well under 1 is cheap even allowing for size. Use it to tell a real bargain "
+          "from a realm whose own history is off. Realm markets only.",
+          {"market": _market, "items": _items}, ["market", "items"],
+          lambda conn, market, items: md.region_prices(conn, market, items)),
     _tool("get_price_history", "Price history",
           "One item's state at every snapshot in a window, rebuilt from change-based storage. resolution raw = "
           "per snapshot; hourly/daily = per UTC bucket (lowest min_price, mean p10/median/quantity, summed "
@@ -275,7 +284,9 @@ TOOLS = [
     _tool("get_deals", "Deals",
           "Items in a market listed at or below max_ratio of their market value that sell at least min_sold "
           "units/day. profit_per_unit is after the 5% AH cut. Pets and gear are judged per breed / bonus set "
-          "(variant_label), not blended.",
+          "(variant_label), not blended. On realm markets each deal also has region_expected (other realms' "
+          "price adjusted to this realm's size) and verdict: confirmed = cheap there too, normal = the usual "
+          "price elsewhere (this realm's own market value is what's off), partial = in between.",
           {"market": _market, "hours": _hours,
            "max_ratio": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.7},
            "min_sold": {"type": "number", "minimum": 0, "default": 1.0},

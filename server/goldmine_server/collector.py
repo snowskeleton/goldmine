@@ -7,7 +7,7 @@ import threading
 import time
 from collections import deque
 
-from . import archive, db, market, settings
+from . import archive, db, market, region, settings
 
 
 def load_config() -> dict:
@@ -86,6 +86,10 @@ class Collector:
                 try:
                     client = market.Client(api["client_id"], api["client_secret"], cache_dir=settings.CACHE_DIR)
                     errors = market.collect(conn, client, cfg, log=self.add)
+                    try:
+                        region.rollup_all(conn, log=self.add)
+                    except Exception as exc:  # the realms' own data is stored; next run retries
+                        self.add(f"region rollup failed: {exc}")
                     try:
                         archive.pack_due(conn, log=self.add)
                     except Exception as exc:  # the rows stay in the hot tables; next run retries

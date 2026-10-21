@@ -19,7 +19,7 @@ from urllib.request import pathname2url
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import archive, auth, db, ledger, pricing, services, settings, store
+from . import archive, auth, db, ledger, pricing, region, services, settings, store
 from .auth import User
 
 MAX_ITEMS = 100          # items per current/values request
@@ -179,6 +179,32 @@ def current_prices(conn, market: str, items) -> dict:
     return {"market": market, "as_of": last, "as_of_iso": iso(last), "items": out}
 
 
+def region_prices(conn, market: str, items) -> dict:
+    """One realm's prices next to the region's for the same items: expected = what other realms
+    charge, adjusted to this realm's size; raw = their plain median; ratio = this realm's p10 over
+    expected (about 1 = normal here, well under = cheap even allowing for size)."""
+    mid = _market_mid(conn, market)
+    ids = resolve_items(conn, items)
+    view = region.expected(conn, market, None)
+    if not view:
+        raise HTTPException(400, f"{market} has no region baseline (commodities, or too few realms collected)")
+    rows = conn.execute(f"""SELECT item_id, variant, min_price, p10, quantity FROM item_current
+                            WHERE market_id = ? AND item_id IN ({','.join('?' * len(ids))})""", (mid, *ids)).fetchall()
+    here = {(i, v): (mn, p10, q) for i, v, mn, p10, q in rows}
+    keys = sorted({k for k in view if k[0] in ids} | set(here), key=lambda k: (k[0], k[1] < 0, k[1]))
+    names = _names(conn, ids)
+    labels = store.variant_labels(conn, [v for _, v in keys])
+    out = []
+    for item, variant in keys:
+        mn, p10, qty = here.get((item, variant), (None, None, 0))
+        v = view.get((item, variant), {})
+        out.append({"item_id": item, "variant": variant, "variant_label": labels[variant], "name": names.get(item),
+                    "min_price": mn, "p10": p10, "quantity": qty, "region_expected": v.get("expected"),
+                    "region_raw": v.get("raw"), "region_realms": v.get("realms"),
+                    "ratio": round(p10 / v["expected"], 3) if p10 and v.get("expected") else None})
+    return {"market": market, "items": out}
+
+
 def _bucket(t: int, resolution: str) -> int:
     return t // 3600 * 3600 if resolution == "hourly" else t // 86400 * 86400
 
@@ -289,7 +315,7 @@ def deals(conn, market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: 
     _market_mid(conn, market)
     hours, limit = _clamp(hours, 1, 24 * 30, 72), _clamp(limit, 1, MAX_ITEMS, 40)
     table, end = _table(conn, market, hours)
-    found = pricing.deal_report(table, max_ratio, min_sold)
+    found = region.annotate(conn, market, pricing.deal_report(table, max_ratio, min_sold))
     names = _names(conn, [d.item_id for d in found[:limit]])
     labels = store.variant_labels(conn, [d.variant for d in found[:limit]])
     return {"market": market, "window_hours": hours, "as_of": end, "as_of_iso": iso(end),
@@ -301,6 +327,8 @@ def deals(conn, market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: 
 def _deal_dict(d: pricing.Deal, names, labels: dict) -> dict:
     return {"item_id": d.item_id, "variant": d.variant, "variant_label": labels.get(d.variant),
             "name": names.get(d.item_id), "current_min": d.current_min,
+            "region_expected": d.region_expected, "region_raw": d.region_raw, "region_realms": d.region_realms,
+            "region_ratio": round(d.region_ratio, 3) if d.region_ratio else None, "verdict": d.verdict,
             "market_value": d.market_value, "discount": round(d.discount, 3), "profit_per_unit": d.profit_per_unit,
             "sold_per_day": round(d.sold_per_day, 2)}
 
@@ -358,6 +386,11 @@ def api_items(q: str, limit: int | None = None, offset: int = 0, user: User = De
 @router.get("/current")
 def api_current(market: str, item: list[str] = Query(...), user: User = Depends(auth.market_user)):
     return _run(current_prices, market, item)
+
+
+@router.get("/region")
+def api_region(market: str, item: list[str] = Query(...), user: User = Depends(auth.market_user)):
+    return _run(region_prices, market, item)
 
 
 @router.get("/history")

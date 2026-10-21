@@ -61,6 +61,10 @@
     <select name="hours" aria-label="Window">
       {% for h, l in [(24, '24 hours'), (72, '3 days'), (168, '7 days'), (336, '14 days')] %}<option value="{{ h }}" {{ 'selected' if h == hours }}>{{ l }}</option>{% endfor %}
     </select>
+    <select name="compare" aria-label="Compare with another realm" title="Another realm's price, adjusted to your realm's size">
+      <option value="">Compare with a realm…</option>
+      {% for r in realms %}<option {{ 'selected' if r == compare }}>{{ r }}</option>{% endfor %}
+    </select>
     {% endif %}
     <button class="primary">Show</button>
   </form>
@@ -93,6 +97,7 @@
         <th class="num" data-sort="num">Off</th>
         <th class="num" data-sort="num">Profit / unit</th>
         <th class="num" data-sort="num">Sold / day</th>
+        <th class="num" data-sort="num" title="What other realms charge, adjusted to this realm's size">Region</th>
         <th class="spark-h">Last {{ data.hours }}h</th>
       </tr></thead>
       <tbody>
@@ -104,6 +109,8 @@
         <td class="num" data-v="{{ r.discount }}"><span class="pill">{{ '%.0f' % (r.discount * 100) }}%</span></td>
         <td class="num" data-v="{{ r.profit }}">{{ money(r.profit, True) }}{{ bar(r.profit, maxp) }}</td>
         <td class="num" data-v="{{ r.sold_per_day }}">{{ '%.1f' % r.sold_per_day }}</td>
+        <td class="num" data-v="{{ r.region or '' }}" title="{% if r.region %}plain region median {{ gold(r.region_raw) }} · listed on {{ r.region_realms }} realms{% endif %}">
+          {% if r.region %}{{ money(r.region) }} <span class="verdict {{ r.verdict }}">{{ r.verdict }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="spark"><span class="sparkline" data-points="{{ r.history | tojson | forceescape }}" data-ref="{{ r.market }}" data-now="{{ r.listed }}"></span></td>
       </tr>
       {% endfor %}
@@ -272,9 +279,10 @@
       <div class="pmarket">
         <div class="row between">
           <h3>{{ m.market }} <span class="chip">{{ m.game }}</span></h3>
-          <span class="muted small">now: min {{ money(last['min']) }} · p10 {{ money(last.p10) }} · median {{ money(last.median) }} · {{ '{:,}'.format(last.listed) }} listed</span>
+          <span class="muted small">now: min {{ money(last['min']) }} · p10 {{ money(last.p10) }} · median {{ money(last.median) }} · {{ '{:,}'.format(last.listed) }} listed{% if last.region %} · region {{ money(last.region) }}{% if last.p10 %} (this realm ×{{ '%.2f' % (last.p10 / last.region) }}){% endif %} on {{ last.realms }} realms{% endif %}</span>
         </div>
-        <div class="pchart" data-points="{{ m.points | tojson | forceescape }}" data-hours="{{ data.hours }}"></div>
+        <div class="pchart" data-points="{{ m.points | tojson | forceescape }}" data-hours="{{ data.hours }}"
+             data-overlays="{{ (m.overlays or []) | tojson | forceescape }}"></div>
         <details>
           <summary class="small">{{ m.points | rejectattr('carried') | list | length }} changes</summary>
           <div class="tscroll"><table class="sortable">

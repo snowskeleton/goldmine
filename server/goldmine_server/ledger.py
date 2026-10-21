@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 import os
 
-from . import market, pricing, svparse, tasks
+from . import market, pricing, region, svparse, tasks
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS characters (
@@ -628,8 +628,8 @@ def set_reports(conn, args, cfg=None) -> list[pricing.SetExport]:
         realm_prices = pricing.price_table(conn, hours, st.markets, scan_chars=st.chars or None)
         merged = pricing.price_table(conn, hours, st.markets + (cs.markets if cs else []),
                                      scan_chars=st.chars or None)
-        exports.append(pricing.SetExport(st, realm_prices, pricing.craft_report(conn, merged, st.chars),
-                                         pricing.deal_report(realm_prices, max_ratio, min_sold)))
+        deals = region.annotate(conn, st.markets[0], pricing.deal_report(realm_prices, max_ratio, min_sold))
+        exports.append(pricing.SetExport(st, realm_prices, pricing.craft_report(conn, merged, st.chars), deals))
     return exports
 
 

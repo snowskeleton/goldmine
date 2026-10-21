@@ -264,6 +264,22 @@ class Deal:
     current_min: int
     market_value: int
     sold_per_day: float
+    region_expected: int | None = None   # region.annotate: what other realms suggest on this realm
+    region_raw: int | None = None
+    region_realms: int | None = None
+
+    @property
+    def region_ratio(self) -> float | None:
+        return self.current_min / self.region_expected if self.region_expected else None
+
+    @property
+    def verdict(self) -> str | None:
+        """Against the region: 'confirmed' (cheap there too), 'normal' (the usual price elsewhere,
+        so this realm's own market value is what's off), or 'partial' in between."""
+        r = self.region_ratio
+        if r is None:
+            return None
+        return "confirmed" if r <= REGION_CONFIRMS else "normal" if r >= REGION_NORMAL else "partial"
 
     @property
     def discount(self) -> float:
@@ -279,6 +295,10 @@ def blended(keys) -> set[tuple[int, int]]:
     bonuses): reports that rank series use the details and skip these blends of them."""
     detailed = {item for item, variant in keys if variant < 0}
     return {(item, variant) for item, variant in keys if variant >= 0 and item in detailed}
+
+
+REGION_CONFIRMS = 0.7   # listed at or below this share of the size-adjusted region price: a real deal
+REGION_NORMAL = 0.9     # at or above it: about what other realms charge
 
 
 def deal_report(prices: dict, max_ratio: float = 0.7, min_sold_per_day: float = 1.0) -> list[Deal]:
@@ -321,6 +341,8 @@ def build_sets(conn, cfg: dict) -> list[MarketSet]:
     commodity_sets: dict[tuple[str, str], MarketSet] = {}
     for name, region, kind, game, realms, source in rows:
         base = name.split(":")[0]
+        if kind == "region":
+            continue  # region baselines are compared against, not priced from
         if enabled is not None and base not in enabled and source not in enabled:
             continue  # an all-realms entry's pricing switch covers the realms it expanded to
         game = game or "retail"

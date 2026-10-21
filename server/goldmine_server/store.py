@@ -245,15 +245,9 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
     lm = last_modified or int(time.time())
     if conn.execute("SELECT 1 FROM snapshots WHERE market = ? AND last_modified = ?", (market, lm)).fetchone():
         return {"skipped": True}
-    prev = conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ? ORDER BY last_modified DESC LIMIT 1",
-                        (market,)).fetchone()
-    day = time.strftime("%Y-%m-%d", time.gmtime(lm))
-    keyframe = prev is None or time.strftime("%Y-%m-%d", time.gmtime(prev[1])) != day
     bonus = BonusKeys(conn)
     listings = [parse_listing(a, bonus) for a in data.get("auctions", [])]
-    sid = conn.execute(
-        "INSERT INTO snapshots (market, fetched_at, last_modified, auctions, keyframe) VALUES (?, ?, ?, ?, ?)",
-        (market, fetched_at or int(time.time()), lm, len(listings), int(keyframe))).lastrowid
+    sid, prev, keyframe = new_snapshot(conn, market, lm, len(listings), fetched_at)
 
     open_auctions = {aid: [series_keys(item, variant, detail), qty, tl, detail]
                      for aid, item, variant, detail, qty, tl in conn.execute(
@@ -305,8 +299,29 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
     conn.executemany("INSERT OR REPLACE INTO auction_changes VALUES (?, ?, ?, ?)", changes)
     conn.executemany("UPDATE auctions SET ended_snap = ?, outcome = ? WHERE market_id = ? AND auction_id = ?", ended)
 
-    # Item states: write a row when the summary changed, something sold, or on a keyframe.
     states = summarize(listings)
+    written = write_states(conn, mid, sid, keyframe, states, sold, gone)
+    conn.commit()
+    return {"listings": len(listings), "items": len(states), "new": len(new_rows), "ended": len(ended),
+            "partial": len(changes), "states": written, "keyframe": keyframe}
+
+
+def new_snapshot(conn, market: str, lm: int, listings: int, fetched_at: int | None = None) -> tuple:
+    """Add a market's snapshot row -> (snapshot id, previous (id, last_modified) or None, keyframe).
+    The first snapshot of each UTC day is a keyframe."""
+    prev = conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ? ORDER BY last_modified DESC LIMIT 1",
+                        (market,)).fetchone()
+    day = time.strftime("%Y-%m-%d", time.gmtime(lm))
+    keyframe = prev is None or time.strftime("%Y-%m-%d", time.gmtime(prev[1])) != day
+    sid = conn.execute(
+        "INSERT INTO snapshots (market, fetched_at, last_modified, auctions, keyframe) VALUES (?, ?, ?, ?, ?)",
+        (market, fetched_at or int(time.time()), lm, listings, int(keyframe))).lastrowid
+    return sid, prev, keyframe
+
+
+def write_states(conn, mid: int, sid: int, keyframe: bool, states: dict, sold: dict, gone: dict) -> int:
+    """Write item states for snapshot `sid`: a row when the summary changed, something sold, or
+    on a keyframe; keeps item_current in step. Returns the rows written (no commit)."""
     current = {(i, v): tuple(rest) for i, v, *rest in conn.execute(
         f"SELECT item_id, variant, {', '.join(STATE_FIELDS)} FROM item_current WHERE market_id = ?", (mid,))}
     state_rows, upserts, removals = [], [], []
@@ -326,9 +341,7 @@ def store_snapshot(conn, market: str, data: dict, last_modified: int | None,
     conn.executemany(f"INSERT INTO item_states VALUES ({', '.join('?' * 14)})", state_rows)
     conn.executemany(f"INSERT OR REPLACE INTO item_current VALUES ({', '.join('?' * 12)})", upserts)
     conn.executemany("DELETE FROM item_current WHERE market_id = ? AND item_id = ? AND variant = ?", removals)
-    conn.commit()
-    return {"listings": len(listings), "items": len(states), "new": len(new_rows), "ended": len(ended),
-            "partial": len(changes), "states": len(state_rows), "keyframe": keyframe}
+    return len(state_rows)
 
 
 # ---------------------------------------------------------------------------

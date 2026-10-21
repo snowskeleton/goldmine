@@ -12,7 +12,7 @@ import datetime as dt
 import json
 import time
 
-from . import archive, ledger, pricing, store
+from . import archive, ledger, pricing, region, store
 from .ledger import fmt_gold
 
 DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -149,7 +149,9 @@ def deals_data(args) -> dict:
     conn = ledger.db_for(args)
     exports = [ex for ex in ledger.set_reports(conn, args) if ex.deals]
     out = {"kind": "deals", "sections": [], "hours": getattr(args, "hours", 72),
-           "note": "Profit/unit is market value after the 5% AH cut, minus the listed price.",
+           "note": "Profit/unit is market value after the 5% AH cut, minus the listed price. Region = what other "
+                   "realms charge, adjusted to this realm's size: confirmed = cheap there too, normal = the usual "
+                   "price elsewhere (this realm's market value is what's off).",
            "empty": None if exports else
            "No deals right now (or not enough snapshots yet; sale rates need a few hours of data)."}
     spark = getattr(args, "history", False)
@@ -162,7 +164,8 @@ def deals_data(args) -> dict:
             row = {"item_id": d.item_id, "variant": d.variant, "name": labelled(names[d.item_id], labels[d.variant]),
                    "listed": d.current_min,
                    "market": d.market_value, "discount": round(d.discount, 4), "profit": d.profit_per_unit,
-                   "sold_per_day": round(d.sold_per_day, 2)}
+                   "sold_per_day": round(d.sold_per_day, 2), "region": d.region_expected,
+                   "region_raw": d.region_raw, "region_realms": d.region_realms, "verdict": d.verdict}
             if spark:
                 row["history"] = history(conn, ex.set.markets, d.item_id, d.variant, out["hours"])
             rows.append(row)
@@ -176,8 +179,9 @@ def deals_text(data: dict) -> str:
     lines = []
     for s in data["sections"]:
         rows = [[short(r["name"]), gold(r["listed"]), gold(r["market"]), f"{r['discount']:.0%}",
-                 gold(r["profit"], True), f"{r['sold_per_day']:.1f}"] for r in s["rows"]]
-        lines += [section_title(s)] + table(["item", "listed at", "market", "off", "profit/unit", "sold/day"],
+                 gold(r["profit"], True), f"{r['sold_per_day']:.1f}",
+                 f"{gold(r['region'])} {r['verdict']}" if r.get("region") else "-"] for r in s["rows"]]
+        lines += [section_title(s)] + table(["item", "listed at", "market", "off", "profit/unit", "sold/day", "region"],
                                             rows, right={1, 2, 3, 4, 5}) + [""]
     return "\n".join(lines)
 
@@ -295,21 +299,63 @@ def summary_text(data: dict) -> str:
 # Price history and timing for one item
 # ---------------------------------------------------------------------------
 
+def _merge(points: list[dict], extra: list[dict], keys: tuple) -> list[dict]:
+    """Lay another series' changes (each holding until its next) onto a chart's points. A time only
+    the other series changed at becomes a carried point, so the change list skips it."""
+    if not extra:
+        return points
+    out, cur, i, j = [], {k: None for k in keys}, 0, 0
+    last = None
+    while i < len(points) or j < len(extra):
+        if j >= len(extra) or (i < len(points) and points[i]["t"] <= extra[j]["t"]):
+            p = dict(points[i])
+            if j < len(extra) and extra[j]["t"] == p["t"]:
+                cur.update({k: extra[j].get(k) for k in keys})
+                j += 1
+            last = p
+            i += 1
+        else:
+            cur.update({k: extra[j].get(k) for k in keys})
+            if last is None:
+                j += 1
+                continue  # before the realm's own first point
+            p = {**last, "t": extra[j]["t"], "sold": 0, "carried": True}
+            j += 1
+        p.update(cur)
+        out.append(p)
+    return out
+
+
+def price_markets(conn, args) -> list[str]:
+    """Which markets the price report charts: the user's own realms and commodities (where they
+    have characters; else every market configured on its own), plus args.compare."""
+    sets = [st for st in pricing.build_sets(conn, ledger.load_cfg(args))]
+    mine = [m for st in sets if st.chars for m in st.markets] or [
+        n for n, in conn.execute("SELECT name FROM markets WHERE source IS NULL AND kind != 'region'")]
+    compare = getattr(args, "compare", None)
+    return mine + ([compare] if compare and compare not in mine else [])
+
+
 def price_data(args) -> dict:
-    """Every change in an item's price and supply over the last args.hours, per market. Each
-    market's first point is the state carried in from before the window (flagged carried)."""
+    """Every change in an item's price and supply over the last args.hours, for the user's own
+    markets (and args.compare). Each market's first point is the state carried in from before the
+    window (flagged carried). Realm charts carry the region lines (region: what other realms charge,
+    adjusted to this realm's size; region_raw: their plain median) and, with args.compare, that
+    realm's p10 adjusted to this realm's size (compare) and as listed (compare_raw)."""
     conn = ledger.db_for(args)
     hours = getattr(args, "hours", 72)
     since = int(time.time()) - hours * 3600
+    compare = getattr(args, "compare", None)
     ids = ledger.resolve_items(conn, args.item)
-    out = {"kind": "price", "item": args.item, "hours": hours, "items": [],
+    out = {"kind": "price", "item": args.item, "hours": hours, "items": [], "compare": compare,
            "empty": None if ids else
            "No matching item (names are known for items you've traded; otherwise pass the item id)."}
     names = ledger.item_names(conn, ids[:10]) if ids else {}
     games = dict(conn.execute("SELECT name, game FROM markets"))
+    shown = price_markets(conn, args)
     for item_id in ids[:10]:
         markets = {}
-        for m, mid in store.market_ids(conn).items():
+        for m, mid in store.market_ids(conn, shown).items():
             times, first = _window(conn, m, since)
             if first is None:
                 continue
@@ -323,10 +369,22 @@ def price_data(args) -> dict:
                          "sold": 0, "carried": True}] if prev else []
                 rows += [{"t": t, "min": mn, "p10": p10, "median": med, "listed": qty, "sold": sold}
                          for t, mn, p10, med, qty, sold in pts]
+                overlays = []
+                reg = region.history(conn, m, item_id, variant, since)
+                if reg:
+                    rows = _merge(rows, reg, ("region", "region_raw", "realms"))
+                    overlays += [["region", "Region (sized like this realm)"], ["region_raw", "Region median"]]
+                if compare and compare != m:
+                    cmp = region.compare(conn, m, compare, item_id, variant, since)
+                    if cmp:
+                        rows = _merge(rows, cmp, ("compare", "compare_raw"))
+                        overlays.append(["compare", f"{compare} (sized like this realm)"])
                 name = labelled(m, labels[variant])
-                markets[m, variant] = {"market": name, "game": games.get(m), "variant": variant, "points": rows}
+                markets[m, variant] = {"market": name, "game": games.get(m), "variant": variant, "points": rows,
+                                       "overlays": overlays}
         out["items"].append({"item_id": item_id, "name": names.get(item_id, f"item {item_id}"),
-                             "markets": [markets[k] for k in sorted(markets, key=lambda k: (k[0], k[1] < 0, k[1]))]})
+                             "markets": [markets[k] for k in sorted(markets, key=lambda k: (k[0] == compare, k[0],
+                                                                                            k[1] < 0, k[1]))]})
     return out
 
 

@@ -190,7 +190,8 @@ REPORT_KINDS = [("crafts", "Crafts"), ("deals", "Deals"), ("flips", "Flips"), ("
 
 
 @app.get("/reports", response_class=HTMLResponse)
-def reports_page(request: Request, kind: str = "crafts", item: str = "", days: int = 7, hours: int = 72):
+def reports_page(request: Request, kind: str = "crafts", item: str = "", days: int = 7, hours: int = 72,
+                 compare: str = ""):
     user = signed_in(request)
     if not user:
         return to_signin(request)
@@ -201,8 +202,18 @@ def reports_page(request: Request, kind: str = "crafts", item: str = "", days: i
     if kind in ("crafts", "deals", "flips", "summary") or (kind == "price" and item):
         kw = {"days": days} if kind in ("summary", "flips") else {"item": item, "hours": hours} if kind == "price" \
             else {"history": True} if kind == "deals" else {}
+        if kind == "price" and compare:
+            kw["compare"] = compare
         data = services.report_data(user.id, kind, **kw)
+    realms = []
+    if kind == "price":
+        conn = db.market_conn()
+        try:
+            realms = [n for n, in conn.execute("SELECT name FROM markets WHERE kind IN ('realm', 'classic') ORDER BY name")]
+        finally:
+            conn.close()
     return page(request, "reports.html", user, kinds=REPORT_KINDS, kind=kind, item=item, days=days, hours=hours,
+                compare=compare, realms=realms,
                 data=data, gold=services.reports.gold, wowhead=services.reports.wowhead_url,
                 wowhead_data=services.reports.wowhead_data)
 
