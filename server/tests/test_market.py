@@ -146,6 +146,44 @@ class CollectTests(unittest.TestCase):
         searches = [c for c in client.calls if c[2] == "/data/wow/search/connected-realm"]
         self.assertEqual(len(searches), 1)  # the realm list is reused between runs
 
+    def test_collect_downloads_in_parallel(self):
+        import threading
+        t0 = 1_790_000_000
+
+        class SlowClient:
+            """Realm n takes (10 - n) ms, so later realms finish first; realm 3 fails."""
+            def __init__(self):
+                self.active = self.peak = 0
+                self.lock = threading.Lock()
+
+            def get(self, region, namespace, path, params=None, if_modified_since=None):
+                if path == "/data/wow/token/index":
+                    return None, None
+                n = int(path.split("/")[-2])
+                with self.lock:
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                time.sleep((10 - n) / 1000)
+                with self.lock:
+                    self.active -= 1
+                if n == 3:
+                    raise market.ApiError("HTTP 503")
+                return {"auctions": [realm_auction(n, 20, 1, buyout=n)]}, t0
+
+        client = SlowClient()
+        for n in range(1, 10):  # realm ids already known, so no lookups
+            self.conn.execute("INSERT INTO markets (name, region, namespace, kind, connected_realm_id, realms) "
+                              "VALUES (?, 'us', 'dynamic-us', 'realm', ?, '[]')", (f"r{n}", n))
+        cfg = {"market": [{"name": f"r{n}", "region": "us", "namespace": "dynamic-us", "kind": "realm",
+                           "realm": f"r{n}"} for n in range(1, 10)]}
+        logs = []
+        self.assertEqual(market.collect(self.conn, client, cfg, log=logs.append), 1)
+        self.assertEqual([m.split(":")[0] for m in logs[:9]], [f"r{n}" for n in range(1, 10)])  # config order
+        self.assertIn("HTTP 503", logs[2])
+        self.assertEqual(logs[9], "8 of 9 markets had new data (0s)")
+        self.assertLessEqual(client.peak, market.FETCH_WORKERS)
+        self.assertGreater(client.peak, 1)
+
     def test_probe_unpublished(self):
         t0 = 1_790_000_000
         realms = {"/data/wow/connected-realm/index": [({"connected_realms": [{"href": "https://x/data/wow/connected-realm/5085?n=1"}]}, None)],

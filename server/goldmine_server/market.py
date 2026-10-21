@@ -14,11 +14,14 @@ from __future__ import annotations
 import base64
 import sys
 import gzip
+import threading
 import json
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
@@ -119,8 +122,13 @@ class Client:
     client_secret: str
     cache_dir: Path | None = None
     _tokens: dict = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def token(self, region: str) -> str:
+        with self._lock:  # collect() downloads from several threads
+            return self._token(region)
+
+    def _token(self, region: str) -> str:
         cached = self._tokens.get(region)
         if cached and cached[1] > time.time() + 60:
             return cached[0]
@@ -408,26 +416,58 @@ def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
     return targets
 
 
+# Downloads run this many at a time while snapshots are stored one by one (SQLite has a single
+# writer). Each response waiting to be stored is a whole AH in memory (~100 MB for the biggest
+# realms), so this also bounds memory.
+FETCH_WORKERS = 4
+
+
+def _fetch(client: Client, t: dict, since: int | None):
+    try:
+        return client.get(t["region"], t["namespace"], t["path"], if_modified_since=since), None
+    except ApiError as exc:
+        return None, exc
+
+
 def collect(conn, client: Client, cfg: dict, log=print) -> int:
     ensure_schema(conn)
     errors = 0
-    for t in market_targets(conn, client, cfg):
-        row = conn.execute("SELECT MAX(last_modified) FROM snapshots WHERE market = ?", (t["name"],)).fetchone()
-        try:
-            data, lm = client.get(t["region"], t["namespace"], t["path"], if_modified_since=row[0])
-        except ApiError as exc:
-            log(f"{t['name']}: {exc}")
-            errors += 1
-            continue
-        if data is None or (lm and lm == row[0]):
-            log(f"{t['name']}: unchanged")
-            continue
-        r = store.store_snapshot(conn, t["name"], data, lm)
-        if r.get("skipped"):
-            log(f"{t['name']}: unchanged")
-            continue
-        log(f"{t['name']}: {r['listings']} listings, {r['items']} items; {r['new']} new, {r['ended']} ended, "
-            f"{r['partial']} partly bought; {r['states']} item states written{' (daily keyframe)' if r['keyframe'] else ''}")
+    started = time.time()
+    targets = market_targets(conn, client, cfg)
+    since = {t["name"]: conn.execute("SELECT MAX(last_modified) FROM snapshots WHERE market = ?",
+                                     (t["name"],)).fetchone()[0] for t in targets}
+    stored = 0
+    with ThreadPoolExecutor(FETCH_WORKERS, thread_name_prefix="fetch") as pool:
+        queue, todo = deque(), iter(targets)
+        for t in todo:  # keep FETCH_WORKERS downloads going, stored in config order
+            queue.append((t, pool.submit(_fetch, client, t, since[t["name"]])))
+            if len(queue) >= FETCH_WORKERS:
+                break
+        while queue:
+            t, future = queue.popleft()
+            result, exc = future.result()
+            nxt = next(todo, None)
+            if nxt is not None:
+                queue.append((nxt, pool.submit(_fetch, client, nxt, since[nxt["name"]])))
+            if exc is not None:
+                log(f"{t['name']}: {exc}")
+                errors += 1
+                continue
+            data, lm = result
+            if data is None or (lm and lm == since[t["name"]]):
+                log(f"{t['name']}: unchanged")
+                continue
+            r = store.store_snapshot(conn, t["name"], data, lm)
+            del data, result
+            if r.get("skipped"):
+                log(f"{t['name']}: unchanged")
+                continue
+            stored += 1
+            log(f"{t['name']}: {r['listings']} listings, {r['items']} items; {r['new']} new, {r['ended']} ended, "
+                f"{r['partial']} partly bought; {r['states']} item states written"
+                f"{' (daily keyframe)' if r['keyframe'] else ''}")
+    if len(targets) > 1:
+        log(f"{stored} of {len(targets)} markets had new data ({time.time() - started:.0f}s)")
     for region in sorted({m["region"] for m in cfg.get("market", [])
                           if m.get("namespace") == f"dynamic-{m.get('region')}"}):  # retail regions
         try:
