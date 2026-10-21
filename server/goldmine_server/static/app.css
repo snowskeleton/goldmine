@@ -18,7 +18,7 @@ header.top { display: flex; align-items: center; gap: 24px; padding: 10px 24px; 
 nav { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 nav a { padding: 6px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; }
 nav a.on, nav a:hover { color: var(--fg); background: var(--code); }
-main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+main { margin: 0 auto; padding: 24px clamp(16px, 2.5vw, 40px) 48px; }
 footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
 h1 { font-size: 26px; margin: 0 0 16px; }
 h2 { font-size: 16px; margin: 0 0 12px; }
@@ -104,6 +104,15 @@ h3 { font-size: 14px; margin: 18px 0 4px; }
 .report tbody tr:hover td { background: var(--hover); }
 .report tfoot th, .report tfoot td { border-top: 2px solid var(--line); border-bottom: 0; font-weight: 600; color: var(--fg); }
 th[data-sort] { cursor: pointer; user-select: none; }
+table.sortable th { position: sticky; }  /* also anchors the resize grip */
+.colgrip { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; touch-action: none; }
+.colgrip:hover, .colgrip.on { background: linear-gradient(var(--accent), var(--accent)) right / 2px 100% no-repeat; }
+table.sized { table-layout: fixed; }
+table.sized th, table.sized td { overflow: hidden; text-overflow: ellipsis; }
+th.dragging { opacity: .4; }
+th.drop-l { box-shadow: inset 2px 0 var(--accent); }
+th.drop-r { box-shadow: inset -2px 0 var(--accent); }
+.colreset { font-size: 12px; }
 th[data-sort]:hover { color: var(--fg); }
 th[data-sort]::after { content: "↕"; opacity: .25; margin-left: 4px; font-size: 10px; }
 th[aria-sort=ascending]::after { content: "▲"; opacity: .8; }

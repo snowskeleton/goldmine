@@ -42,7 +42,7 @@
   // ---- sortable tables: th[data-sort=num|text], cells carry data-v
   document.querySelectorAll("table.sortable").forEach((table) => {
     const ths = [...table.tHead.rows[0].cells];
-    ths.forEach((th, col) => {
+    ths.forEach((th) => {
       if (!th.dataset.sort) return;
       th.tabIndex = 0;
       const sort = () => {
@@ -50,7 +50,7 @@
         const desc = cur ? cur === "ascending" : th.dataset.sort === "num";
         ths.forEach((h) => h.removeAttribute("aria-sort"));
         th.setAttribute("aria-sort", desc ? "descending" : "ascending");
-        const body = table.tBodies[0];
+        const body = table.tBodies[0], col = th.cellIndex;  // columns can be reordered
         const key = (tr) => {
           const v = tr.cells[col].dataset.v;
           return th.dataset.sort === "num" ? (v === "" || v == null ? null : Number(v)) : (v || "").toLowerCase();
@@ -64,10 +64,169 @@
         });
         rows.forEach(([, tr]) => body.appendChild(tr));
       };
-      th.addEventListener("click", sort);
+      th.addEventListener("click", () => { if (!table.dataset.busy) sort(); });
       th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sort(); } });
     });
   });
+
+  // ---- resizable, movable columns: drag a header's right edge to resize it (double-click the edge to undo),
+  // drag the header itself to move the column. Saved in a cookie per table shape, so every section of a
+  // report shares one layout.
+  const colKey = (th) => th.textContent.replace(/\d+/g, "").trim().toLowerCase();  // "Last 72h" == "Last 24h"
+  const heads = (table) => [...table.tHead.rows[0].cells];
+  const layouts = new Map();
+  let dragging = null;
+
+  function cookieName(keys) {
+    let h = 0;
+    for (const ch of [...keys].sort().join("|")) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    return "gm_cols_" + (h >>> 0).toString(36);
+  }
+  function loadLayout(name) {
+    const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+    try { const v = m && JSON.parse(decodeURIComponent(m[1])); if (v) return { o: v.o || [], w: v.w || {} }; } catch (e) { /* bad cookie */ }
+    return { o: [], w: {} };
+  }
+  const custom = (L) => L.o.length > 0 || Object.keys(L.w).length > 0;
+  function saveLayout(L) {
+    const v = custom(L) ? encodeURIComponent(JSON.stringify({ o: L.o, w: L.w })) : "";
+    document.cookie = `${L.name}=${v}; path=/; max-age=${custom(L) ? 31536000 : 0}; SameSite=Lax`;
+    L.resets.forEach((b) => { b.hidden = !custom(L); });
+  }
+
+  // Put the columns in L.o's order (columns it doesn't name keep their place at the end).
+  function arrange(table, order) {
+    const keys = heads(table).map(colKey), n = keys.length;
+    const idx = order.map((k) => keys.indexOf(k)).filter((i) => i >= 0);
+    keys.forEach((k, i) => { if (!idx.includes(i)) idx.push(i); });
+    if (idx.every((c, i) => c === i)) return;
+    [...table.rows].forEach((tr) => {
+      if (tr.cells.length !== n) return;
+      const cells = [...tr.cells];
+      idx.forEach((i) => tr.appendChild(cells[i]));
+    });
+  }
+
+  // Fixed layout from the saved widths; columns without one keep their natural width.
+  function size(table, w) {
+    const ths = heads(table);
+    table.classList.remove("sized");
+    table.style.width = "";
+    ths.forEach((th) => { th.style.width = ""; });
+    if (!ths.some((th) => w[colKey(th)]) || !table.offsetParent) return;  // hidden in a closed <details>: sized on open
+    const natural = ths.map((th) => Math.ceil(th.getBoundingClientRect().width));
+    let total = 0;
+    ths.forEach((th, i) => { const px = w[colKey(th)] || natural[i]; th.style.width = `${px}px`; total += px; });
+    table.style.width = `${total}px`;
+    table.classList.add("sized");
+  }
+  function widen(table, key, px) {
+    if (!table.classList.contains("sized")) return;
+    let total = 0;
+    heads(table).forEach((th) => {
+      if (colKey(th) === key) th.style.width = `${px}px`;
+      total += parseFloat(th.style.width) || 0;
+    });
+    table.style.width = `${total}px`;
+  }
+
+  document.querySelectorAll("table.sortable").forEach((table) => {
+    const name = cookieName(heads(table).map(colKey));
+    if (!layouts.has(name)) layouts.set(name, { name, ...loadLayout(name), tables: [], resets: [] });
+    const L = layouts.get(name);
+    L.tables.push(table);
+    table.dataset.cols = heads(table).map(colKey).join("\n");  // the template's order, for Reset
+    arrange(table, L.o);
+    size(table, L.w);
+
+    heads(table).forEach((th) => {
+      const g = document.createElement("span");
+      g.className = "colgrip";
+      th.appendChild(g);
+      g.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        table.dataset.busy = "1";  // no sort on the click and no column drag that follow
+        const key = colKey(th), x0 = e.clientX, w0 = Math.round(th.getBoundingClientRect().width);
+        if (!L.w[key]) { L.w[key] = w0; L.tables.forEach((t) => size(t, L.w)); }
+        g.setPointerCapture(e.pointerId);
+        g.classList.add("on");
+        const move = (ev) => {
+          L.w[key] = Math.max(36, w0 + Math.round(ev.clientX - x0));
+          L.tables.forEach((t) => widen(t, key, L.w[key]));
+        };
+        const up = () => {
+          g.removeEventListener("pointermove", move);
+          g.removeEventListener("pointerup", up);
+          g.classList.remove("on");
+          saveLayout(L);
+          setTimeout(() => { delete table.dataset.busy; }, 0);
+        };
+        g.addEventListener("pointermove", move);
+        g.addEventListener("pointerup", up);
+      });
+      g.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        delete L.w[colKey(th)];
+        L.tables.forEach((t) => size(t, L.w));
+        saveLayout(L);
+      });
+
+      th.draggable = true;
+      const unmark = () => th.classList.remove("drop-l", "drop-r");
+      th.addEventListener("dragstart", (e) => {
+        if (table.dataset.busy) return e.preventDefault();
+        dragging = { L, key: colKey(th) };
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", dragging.key);
+        th.classList.add("dragging");
+      });
+      th.addEventListener("dragend", () => { th.classList.remove("dragging"); dragging = null; });
+      th.addEventListener("dragover", (e) => {
+        if (!dragging || dragging.L !== L || dragging.key === colKey(th)) return;
+        e.preventDefault();
+        const r = th.getBoundingClientRect(), after = e.clientX > r.left + r.width / 2;
+        th.classList.toggle("drop-l", !after);
+        th.classList.toggle("drop-r", after);
+      });
+      th.addEventListener("dragleave", unmark);
+      th.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const after = th.classList.contains("drop-r");
+        unmark();
+        if (!dragging || dragging.L !== L) return;
+        const order = heads(table).map(colKey).filter((k) => k !== dragging.key);
+        order.splice(order.indexOf(colKey(th)) + (after ? 1 : 0), 0, dragging.key);
+        L.o = order;
+        L.tables.forEach((t) => arrange(t, order));
+        saveLayout(L);
+      });
+    });
+
+    const head = table.closest("section")?.querySelector(":scope > header.sect");
+    if (head && !head.querySelector(".colreset")) {
+      const b = document.createElement("button");
+      b.className = "link small colreset";
+      b.textContent = "Reset columns";
+      b.title = "Undo column sizes and order for this report";
+      b.addEventListener("click", () => {
+        L.o = [];
+        L.w = {};
+        L.tables.forEach((t) => {
+          const keys = heads(t).map(colKey);
+          arrange(t, t.dataset.cols.split("\n").filter((k) => keys.includes(k)));
+          size(t, L.w);
+        });
+        saveLayout(L);
+      });
+      b.hidden = !custom(L);
+      head.appendChild(b);
+      L.resets.push(b);
+    }
+  });
+  document.querySelectorAll("details").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.open) d.querySelectorAll("table.sortable").forEach((t) => size(t, layouts.get(cookieName(heads(t).map(colKey))).w));
+  }));
 
   // ---- local times
   document.querySelectorAll("[data-ts]").forEach((td) => { td.textContent = when(Number(td.dataset.ts)); });
