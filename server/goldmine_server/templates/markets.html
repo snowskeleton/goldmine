@@ -11,7 +11,8 @@
     {% for m in markets %}
     {% set st = status.get(m.name) %}
     <tr>
-      <td>{{ m.name }}</td><td>{{ m.kind }}</td><td><code>{{ m.namespace }}</code></td><td>{{ m.realm or '—' }}</td>
+      <td>{{ m.name }}</td><td>{{ m.kind }}</td><td><code>{{ m.namespace }}</code></td>
+      <td>{% if m.kind == 'all-realms' %}{{ st.realms if st else 0 }} connected realms{% else %}{{ m.realm or '—' }}{% endif %}</td>
       <td>{{ m.game or game_for(m.namespace) }}</td>
       <td class="num">{{ st.snapshots if st else 0 }}</td><td>{{ (st.last_modified if st else None)|ago }}</td>
       <td><form method="post" action="/markets/pricing" class="inline"><input type="hidden" name="name" value="{{ m.name }}">
@@ -35,11 +36,12 @@
           <option value="realm">realm (one realm's auction house)</option>
           <option value="commodities">commodities (region-wide stackables)</option>
           <option value="classic">classic (per-faction houses)</option>
+          <option value="all-realms">all realms (every realm in the namespace not added on its own)</option>
         </select>
       </label>
       <label>Region <input name="region" value="us"></label>
       <label>Namespace <input name="namespace" required placeholder="dynamic-us"></label>
-      <label>Realm slug <input name="realm" placeholder="proudmoore (not needed for commodities)"></label>
+      <label>Realm slug <input name="realm" placeholder="proudmoore (not needed for commodities or all realms)"></label>
       <label>Game <input name="game" placeholder="auto from namespace"></label>
       <button class="primary">Add market</button>
     </form>
@@ -67,6 +69,12 @@
         <input type="hidden" name="kind" value="commodities"><input type="hidden" name="region" value="{{ region }}">
         <input type="hidden" name="namespace" value="{{ namespace }}">
         <button class="link">+ Add {{ region }} commodities for this namespace</button>
+      </form>
+      <form method="post" action="/markets/add" class="inline">
+        <input type="hidden" name="name" value="{{ region }}-{{ game_for(namespace) }}-all-realms">
+        <input type="hidden" name="kind" value="all-realms"><input type="hidden" name="region" value="{{ region }}">
+        <input type="hidden" name="namespace" value="{{ namespace }}">
+        <button class="link" title="Each connected realm becomes its own market; realms you add on their own are skipped">+ Collect every {{ region }} realm in this namespace</button>
       </form>
       <input type="search" placeholder="Filter realms" oninput="filterRows(this, 'realms')">
       <div class="scroll">

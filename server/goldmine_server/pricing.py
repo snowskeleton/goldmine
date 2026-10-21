@@ -315,14 +315,14 @@ def build_sets(conn, cfg: dict) -> list[MarketSet]:
     """Group configured markets into per-realm and per-game commodity sets, with the
     characters (from the ledger) that live on each realm."""
     enabled = {m["name"] for m in cfg.get("market", []) if m.get("pricing", True)} if cfg.get("market") else None
-    rows = conn.execute("SELECT name, region, kind, game, realms FROM markets").fetchall()
+    rows = conn.execute("SELECT name, region, kind, game, realms, source FROM markets").fetchall()
     chars = conn.execute("SELECT key, realm, region FROM characters").fetchall()
     realm_sets: dict[str, MarketSet] = {}
     commodity_sets: dict[tuple[str, str], MarketSet] = {}
-    for name, region, kind, game, realms in rows:
+    for name, region, kind, game, realms, source in rows:
         base = name.split(":")[0]
-        if enabled is not None and base not in enabled:
-            continue
+        if enabled is not None and base not in enabled and source not in enabled:
+            continue  # an all-realms entry's pricing switch covers the realms it expanded to
         game = game or "retail"
         if kind == "commodities":
             cs = commodity_sets.setdefault((game, region), MarketSet("commodities", game, region, base, []))

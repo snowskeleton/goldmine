@@ -260,9 +260,16 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
             error = str(exc)
     conn = db.market_conn()
     try:
-        status = {m["name"].split(":")[0]: m for m in services.market_status(conn)}
+        rows = services.market_status(conn)
     finally:
         conn.close()
+    status = {m["name"].split(":")[0]: m for m in rows}
+    for m in rows:  # an all-realms entry shows the totals of the realms it expanded to
+        if m["source"]:
+            st = status.setdefault(m["source"], {"snapshots": 0, "last_modified": None, "realms": 0})
+            st["snapshots"] += m["snapshots"]
+            st["realms"] += 1
+            st["last_modified"] = max(filter(None, (st["last_modified"], m["last_modified"])), default=None)
     return page(request, "markets.html", user, markets=cfg.get("market", []), status=status, realms=realms,
                 region=region, namespace=namespace, game=game, namespace_games=market.NAMESPACE_GAMES,
                 error=error, game_for=market.game_for)
@@ -274,13 +281,16 @@ def markets_add(request: Request, name: str = Form(...), region: str = Form("us"
                 user: User = Depends(auth.require_admin)):
     cfg = load_config()
     entry = {"name": name.strip(), "region": region.strip().lower(), "namespace": namespace.strip(), "kind": kind}
-    if kind != "commodities":
+    if kind not in ("commodities", "all-realms"):
         if not realm.strip():
             raise HTTPException(400, "realm markets need a realm slug")
         entry["realm"] = realm.strip()
     if game.strip():
         entry["game"] = game.strip()
-    if kind not in ("commodities", "realm", "classic") or not entry["name"] or not entry["namespace"]:
+    if kind == "all-realms" and not next((g["auctions"] for g in market.NAMESPACE_GAMES
+                                          if g["game"] == market.game_for(entry["namespace"], entry.get("game"))), True):
+        raise HTTPException(400, "that game version has no auction house data in the API")
+    if kind not in ("commodities", "realm", "classic", "all-realms") or not entry["name"] or not entry["namespace"]:
         raise HTTPException(400, "name, namespace and a valid kind are required")
     markets = [m for m in cfg.get("market", []) if m.get("name") != entry["name"]]
     cfg["market"] = markets + [entry]

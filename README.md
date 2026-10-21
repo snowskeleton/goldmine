@@ -225,6 +225,15 @@ How the numbers are defined is documented at the top of `server/goldmine_server/
 between snapshots before they could have expired (cancellations count too, so it's an upper
 bound); your own in-game scans override API prices when they're fresher.
 
+**Every realm at once.** An `all-realms` market (Markets page → Browse realms → "Collect every
+realm in this namespace", or `kind = "all-realms"` with a region and namespace) collects every
+connected realm in that namespace as its own market, named after one of its realms
+(`us-moon-guard`). Realms you add on their own are skipped, new realms and merges are picked up
+from the realm list (re-read every 6 hours), and removing a realm's own entry hands it to the
+all-realms entry under the same name. Its pricing switch covers all of its realms; reports only
+use realms you have characters on either way. US retail is 83 connected realms, about 2.2M
+listings, roughly 50 MB of downloads an hour.
+
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is
 empty). Era (`classic1x`) and Anniversary (`classicann`) list auction houses but every auction

@@ -321,6 +321,16 @@ class ServerFlow(unittest.TestCase):
         self.admin.post("/markets/remove", data={"name": "us-pagle"})
         self.assertEqual(len(market.load_config(settings.CONFIG)["market"]), 1)
         self.assertIn("us-commodities", self.admin.get("/markets").text)
+        r = self.admin.post("/markets/add", data={"name": "us-retail-all-realms", "kind": "all-realms", "region": "us",
+                                                  "namespace": "dynamic-us"})
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(market.load_config(settings.CONFIG)["market"][-1],
+                         {"name": "us-retail-all-realms", "region": "us", "namespace": "dynamic-us", "kind": "all-realms"})
+        self.assertIn("0 connected realms", self.admin.get("/markets").text)
+        r = self.admin.post("/markets/add", data={"name": "era-all", "kind": "all-realms", "region": "us",
+                                                  "namespace": "dynamic-classic1x-us"})
+        self.assertEqual(r.status_code, 400)  # Classic Era has no AH data in the API
+        self.admin.post("/markets/remove", data={"name": "us-retail-all-realms"})
 
     def test_12b_browse_realms_namespace(self):
         from unittest import mock

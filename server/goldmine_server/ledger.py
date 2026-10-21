@@ -652,25 +652,7 @@ def resolve_items(conn, query: str) -> list[int]:
     return ids
 
 
-def list_realms(client, region: str, namespace: str) -> list[dict]:
-    """Every realm in a namespace: connected_realm_id, slug, name, type, category."""
-    page, rows = 1, []
-    while True:
-        data, _ = client.get(region, namespace, "/data/wow/search/connected-realm",
-                             {"_page": page, "_pageSize": 100, "orderby": "id"})
-        for r in data.get("results", []):
-            d = r["data"]
-            for realm in d.get("realms", []):
-                name = realm.get("name")
-                name = name.get("en_US") if isinstance(name, dict) else name
-                cat = realm.get("category")
-                rows.append({"connected_realm_id": d["id"], "slug": realm.get("slug"), "name": name,
-                             "type": (realm.get("type") or {}).get("type"),
-                             "category": cat.get("en_US") if isinstance(cat, dict) else cat})
-        if page >= data.get("pageCount", 1):
-            break
-        page += 1
-    return sorted(rows, key=lambda r: r["slug"] or "")
+list_realms = market.list_realms
 
 
 PROBE_NAMESPACES = [g["prefix"] + "-{r}" for g in market.NAMESPACE_GAMES] + [

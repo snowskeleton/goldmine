@@ -208,10 +208,11 @@ def market_status(conn) -> list[dict]:
     rows = conn.execute("""
         SELECT m.name, COUNT(s.id), MAX(s.last_modified), MAX(s.fetched_at),
                (SELECT COUNT(*) FROM item_current c WHERE c.market_id = m.mid), m.game,
-               (SELECT COUNT(*) FROM auctions a WHERE a.market_id = m.mid AND a.ended_snap IS NULL)
+               (SELECT COUNT(*) FROM auctions a WHERE a.market_id = m.mid AND a.ended_snap IS NULL), m.source
         FROM markets m LEFT JOIN snapshots s ON s.market = m.name
         GROUP BY m.name ORDER BY m.name""").fetchall()
-    return [dict(zip(("name", "snapshots", "last_modified", "last_fetched", "items", "game", "open_auctions"), r))
+    return [dict(zip(("name", "snapshots", "last_modified", "last_fetched", "items", "game", "open_auctions",
+                      "source"), r))
             for r in rows]
 
 

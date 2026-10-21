@@ -113,6 +113,39 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT updated, price FROM token_prices ORDER BY updated").fetchall(),
                          [(t0, 3_000_000_000), (t0 + 2400, 3_100_000_000)])
 
+    def test_all_realms(self):
+        t0 = 1_790_000_000
+        market._realm_lists.clear()
+
+        def group(crid, *slugs):
+            return {"data": {"id": crid, "realms": [{"slug": s, "name": {"en_US": s.title()}} for s in slugs]}}
+        client = FakeClient({
+            "/data/wow/search/connected-realm": [({"pageCount": 1, "results": [
+                group(5, "proudmoore"), group(60, "wyrmrest-accord", "moon-guard"), group(61, "stormrage")]}, None)],
+            "/data/wow/realm/proudmoore": [({"connected_realm": {"href": "https://x/data/wow/connected-realm/5"}}, None)],
+            "/data/wow/connected-realm/5": [({"realms": [{"name": "Proudmoore"}]}, None)],
+            **{f"/data/wow/connected-realm/{c}/auctions": [({"auctions": [realm_auction(c, 20, 1, buyout=c)]}, t0)]
+               for c in (5, 60, 61)},
+            "/data/wow/token/index": [({"last_updated_timestamp": t0 * 1000, "price": 1}, None)],
+        })
+        own = {"name": "us-proudmoore", "region": "us", "namespace": "dynamic-us", "kind": "realm", "realm": "proudmoore"}
+        every = {"name": "us-retail-all-realms", "region": "us", "namespace": "dynamic-us", "kind": "all-realms"}
+        market.collect(self.conn, client, {"market": [own, every]}, log=lambda _: None)
+        rows = {r[0]: r[1:] for r in self.conn.execute("SELECT name, connected_realm_id, source, realms FROM markets")}
+        self.assertEqual(rows, {
+            "us-proudmoore": (5, None, '["Proudmoore"]'),  # configured on its own: not doubled
+            "us-moon-guard": (60, "us-retail-all-realms", '["Moon-Guard", "Wyrmrest-Accord"]'),
+            "us-stormrage": (61, "us-retail-all-realms", '["Stormrage"]')})
+        self.assertEqual(self.conn.execute("SELECT COUNT(DISTINCT market) FROM snapshots").fetchone()[0], 3)
+
+        # The realm's own entry removed: the all-realms entry takes it over under the same name.
+        market.collect(self.conn, client, {"market": [every]}, log=lambda _: None)
+        self.assertEqual(self.conn.execute("SELECT source FROM markets WHERE name = 'us-proudmoore'").fetchone()[0],
+                         "us-retail-all-realms")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM markets").fetchone()[0], 3)
+        searches = [c for c in client.calls if c[2] == "/data/wow/search/connected-realm"]
+        self.assertEqual(len(searches), 1)  # the realm list is reused between runs
+
     def test_fetch_item_info(self):
         client = FakeClient({
             "/data/wow/item/2589": [({"name": "Linen Cloth", "quality": {"type": "COMMON"}, "sell_price": 13,

@@ -171,6 +171,13 @@ class MultiGameTests(unittest.TestCase):
         names = {s.name for s in pricing.build_sets(self.conn, cfg)}
         self.assertEqual(names, {"us-commodities", "us-proudmoore"})
 
+    def test_all_realms_pricing_flag_covers_its_realms(self):
+        self.conn.execute("UPDATE markets SET source = 'us-all' WHERE name = 'us-stormrage'")
+        cfg = {"market": [{"name": "us-commodities"}, {"name": "us-all"}]}
+        self.assertEqual({s.name for s in pricing.build_sets(self.conn, cfg)}, {"us-commodities", "us-stormrage"})
+        cfg["market"][1]["pricing"] = False
+        self.assertEqual({s.name for s in pricing.build_sets(self.conn, cfg)}, {"us-commodities"})
+
     def test_timing_from_hourly_rows(self):
         # Sales: listing 1 shrinks by 40 between the two snapshots.
         t = NOW + 2 * HOUR

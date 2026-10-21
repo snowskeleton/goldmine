@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS markets (
     auction_house_id    INTEGER,
     game                TEXT,               -- retail | classic | classic1x | classicann | ...
     realms              TEXT,               -- JSON list of realm names this AH serves
+    source              TEXT,               -- the all-realms config entry it came from; NULL = its own entry
     mid                 INTEGER UNIQUE      -- compact id used by the storage tables
 );
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -174,10 +175,10 @@ class Client:
 # Collection
 # ---------------------------------------------------------------------------
 
-MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT")]}
+MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT"), ("source", "TEXT")]}
 
 
-SCHEMA_VERSION = 4  # bump when MARKET_SCHEMA / store.SCHEMA / archive.SCHEMA change
+SCHEMA_VERSION = 5  # bump when MARKET_SCHEMA / store.SCHEMA / archive.SCHEMA change
 
 
 def ensure_schema(conn) -> None:
@@ -231,21 +232,93 @@ def connected_realm_names(client: Client, region: str, namespace: str, crid: int
     return [n for n in names if n]
 
 
+def list_realms(client: Client, region: str, namespace: str) -> list[dict]:
+    """Every realm in a namespace: connected_realm_id, slug, name, type, category."""
+    page, rows = 1, []
+    while True:
+        data, _ = client.get(region, namespace, "/data/wow/search/connected-realm",
+                             {"_page": page, "_pageSize": 100, "orderby": "id"})
+        for r in data.get("results", []):
+            d = r["data"]
+            for realm in d.get("realms", []):
+                name = realm.get("name")
+                name = name.get("en_US") if isinstance(name, dict) else name
+                cat = realm.get("category")
+                rows.append({"connected_realm_id": d["id"], "slug": realm.get("slug"), "name": name,
+                             "type": (realm.get("type") or {}).get("type"),
+                             "category": cat.get("en_US") if isinstance(cat, dict) else cat})
+        if page >= data.get("pageCount", 1):
+            break
+        page += 1
+    return sorted(rows, key=lambda r: r["slug"] or "")
+
+
+# All-realms entries re-list the namespace's connected realms this often (merges and new realms are
+# rare), so a collection run doesn't page through the realm search every time.
+REALM_LIST_TTL = 6 * 3600
+_realm_lists: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def _realm_list(client: Client, region: str, namespace: str) -> list[dict]:
+    hit = _realm_lists.get((region, namespace))
+    if hit and time.time() - hit[0] < REALM_LIST_TTL:
+        return hit[1]
+    rows = list_realms(client, region, namespace)
+    _realm_lists[(region, namespace)] = (time.time(), rows)
+    return rows
+
+
+def expand_all_realms(conn, client: Client, entry: dict, taken: set[int], reserved: set[str]) -> list[dict]:
+    """An all-realms config entry -> a realm (classic: per-house) entry for every connected realm
+    in its namespace whose id isn't in `taken`. A connected realm that already has a market (say
+    one configured on its own and since removed) keeps its name and history; a new one is named
+    region-<first slug alphabetically>, plus the id if that name is taken."""
+    region, ns = entry["region"], entry["namespace"]
+    groups: dict[int, list[dict]] = {}
+    for r in _realm_list(client, region, ns):
+        groups.setdefault(r["connected_realm_id"], []).append(r)
+    named = {crid: name.split(":")[0] for name, crid in conn.execute(
+        "SELECT name, connected_realm_id FROM markets WHERE namespace = ? AND connected_realm_id IS NOT NULL "
+        "ORDER BY source = ?", (ns, entry["name"]))}  # this entry's own names win
+    used = {n.split(":")[0] for n, in conn.execute("SELECT name FROM markets")} | reserved
+    kind = "realm" if game_for(ns, entry.get("game")) == "retail" else "classic"
+    out = []
+    for crid, realms in sorted(groups.items()):
+        if crid in taken:
+            continue
+        name = named.get(crid)
+        if name is None:
+            name = f"{region}-{min(r['slug'] for r in realms)}"
+            if name in used:
+                name = f"{name}-{crid}"
+            used.add(name)
+        out.append({"name": name, "region": region, "namespace": ns, "kind": kind, "crid": crid,
+                    "realms": sorted(r["name"] for r in realms if r["name"]), "game": entry.get("game"),
+                    "source": entry["name"]})
+    return out
+
+
 def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
-    """Expand config markets into concrete endpoints (classic realms expand per auction house)."""
-    targets = []
-    for m in cfg.get("market", []):
+    """Expand config markets into concrete endpoints (classic realms expand per auction house;
+    all-realms entries into every connected realm not configured on its own)."""
+    targets: list[dict] = []
+
+    def add(m: dict) -> None:
         region, ns, kind = m["region"], m["namespace"], m["kind"]
         if kind == "commodities":
             targets.append({"name": m["name"], "region": region, "namespace": ns, "kind": kind,
                             "path": "/data/wow/auctions/commodities", "crid": None, "house": None,
                             "realms": [], "game": game_for(ns, m.get("game"))})
-            continue
-        row = conn.execute("SELECT connected_realm_id, realms FROM markets WHERE (name = ? OR name LIKE ?) "
-                           "AND namespace = ?", (m["name"], m["name"] + ":%", ns)).fetchone()
-        crid = row[0] if row and row[0] else resolve_connected_realm(client, region, ns, m["realm"])
-        realms = json.loads(row[1]) if row and row[1] else connected_realm_names(client, region, ns, crid)
-        common = {"region": region, "namespace": ns, "kind": kind, "crid": crid, "realms": realms}
+            return
+        if m.get("crid"):  # from an all-realms entry
+            crid, realms = m["crid"], m["realms"]
+        else:
+            row = conn.execute("SELECT connected_realm_id, realms FROM markets WHERE (name = ? OR name LIKE ?) "
+                               "AND namespace = ?", (m["name"], m["name"] + ":%", ns)).fetchone()
+            crid = row[0] if row and row[0] else resolve_connected_realm(client, region, ns, m["realm"])
+            realms = json.loads(row[1]) if row and row[1] else connected_realm_names(client, region, ns, crid)
+        common = {"region": region, "namespace": ns, "kind": kind, "crid": crid, "realms": realms,
+                  "game": m.get("game"), "source": m.get("source")}
         if kind == "realm":
             targets.append({"name": m["name"], "path": f"/data/wow/connected-realm/{crid}/auctions",
                             "house": None, **common})
@@ -257,18 +330,28 @@ def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
                                 "path": f"/data/wow/connected-realm/{crid}/auctions/{house['id']}", **common})
         else:
             raise ValueError(f"market {m['name']}: unknown kind {kind!r}")
-    games = {m["name"]: game_for(m["namespace"], m.get("game")) for m in cfg.get("market", [])}
+
+    markets = cfg.get("market", [])
+    for m in markets:
+        if m["kind"] != "all-realms":
+            add(m)
+    for m in markets:
+        if m["kind"] == "all-realms":
+            taken = {t["crid"] for t in targets if t["namespace"] == m["namespace"] and t["crid"]}
+            for e in expand_all_realms(conn, client, m, taken, {c["name"] for c in markets}):
+                add(e)
+    games = {m["name"]: game_for(m["namespace"], m.get("game")) for m in markets}
     for t in targets:
         game = t.get("game") or games.get(t["name"].split(":")[0]) or game_for(t["namespace"])
         conn.execute("""INSERT INTO markets (name, region, namespace, kind, connected_realm_id, auction_house_id,
-                                             game, realms)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                             game, realms, source)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(name) DO UPDATE SET region=excluded.region, namespace=excluded.namespace,
                           kind=excluded.kind, connected_realm_id=excluded.connected_realm_id,
                           auction_house_id=excluded.auction_house_id, game=excluded.game,
-                          realms=excluded.realms""",
+                          realms=excluded.realms, source=excluded.source""",
                      (t["name"], t["region"], t["namespace"], t["kind"], t["crid"], t["house"],
-                      game, json.dumps(t["realms"])))
+                      game, json.dumps(t["realms"]), t.get("source")))
     conn.commit()
     return targets
 
