@@ -146,6 +146,27 @@ class CollectTests(unittest.TestCase):
         searches = [c for c in client.calls if c[2] == "/data/wow/search/connected-realm"]
         self.assertEqual(len(searches), 1)  # the realm list is reused between runs
 
+    def test_probe_unpublished(self):
+        t0 = 1_790_000_000
+        realms = {"/data/wow/connected-realm/index": [({"connected_realms": [{"href": "https://x/data/wow/connected-realm/5085?n=1"}]}, None)],
+                  "/data/wow/connected-realm/5085/auctions/index": [({"auctions": [{"id": 2}]}, None)]}
+        client = FakeClient(realms)  # listings 404, as Era and Anniversary do
+        logs = []
+        market.probe_unpublished(self.conn, client, {"us"}, now=t0, log=logs.append)
+        self.assertEqual(self.conn.execute("SELECT namespace, ok FROM api_probes ORDER BY 1").fetchall(),
+                         [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0)])
+        self.assertEqual(logs, [])
+        client.responses["/data/wow/connected-realm/5085/auctions/2"] = [({"auctions": [{"id": 1}]}, None)]
+        market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 3600, log=logs.append)
+        self.assertEqual(logs, [])  # checked at most once a day
+        market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 86400, log=logs.append)
+        self.assertEqual(len(logs), 2)
+        self.assertIn("Classic Era (us): Blizzard now serves auction house data (1 listings", logs[0])
+        games = {g["game"]: g["auctions"] for g in market.namespace_games(self.conn)}
+        self.assertEqual(games, {"retail": True, "classic": True, "classic1x": True, "classicann": True})
+        market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 2 * 86400, log=logs.append)
+        self.assertEqual(len(logs), 2)  # still fine: nothing new to say
+
     def test_fetch_item_info(self):
         client = FakeClient({
             "/data/wow/item/2589": [({"name": "Linen Cloth", "quality": {"type": "COMMON"}, "sell_price": 13,

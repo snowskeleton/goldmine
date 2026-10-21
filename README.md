@@ -237,7 +237,9 @@ listings, roughly 50 MB of downloads an hour.
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is
 empty). Era (`classic1x`) and Anniversary (`classicann`) list auction houses but every auction
-path returns 404, so their AH data isn't published. Markets for a different game version
+path returns 404, so their AH data isn't published. The collector checks one of their auction
+houses once a day and says so on the dashboard (and unlocks them on the Markets page) once
+Blizzard serves the listings. Markets for a different game version
 should get `pricing = false` so overlapping item ids don't mix into your prices.
 
 **Launch day:** on the server, run `python -m goldmine_server.cli probe us` to see which API

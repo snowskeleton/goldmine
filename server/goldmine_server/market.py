@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS item_info (
     inventory_type  TEXT,
     fetched         INTEGER
 );
+-- Daily check of game versions whose AH data the API doesn't serve (NAMESPACE_GAMES auctions = False).
+CREATE TABLE IF NOT EXISTS api_probes (
+    namespace  TEXT PRIMARY KEY,
+    checked    INTEGER NOT NULL,        -- unix seconds
+    ok         INTEGER NOT NULL,        -- 1 = an auction house returned its listings
+    detail     TEXT                     -- what the check saw
+);
 -- WoW token price per region, a row only when Blizzard's price changes.
 CREATE TABLE IF NOT EXISTS token_prices (
     region   TEXT NOT NULL,
@@ -178,7 +185,7 @@ class Client:
 MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT"), ("source", "TEXT")]}
 
 
-SCHEMA_VERSION = 5  # bump when MARKET_SCHEMA / store.SCHEMA / archive.SCHEMA change
+SCHEMA_VERSION = 6  # bump when MARKET_SCHEMA / store.SCHEMA / archive.SCHEMA change
 
 
 def ensure_schema(conn) -> None:
@@ -206,6 +213,51 @@ NAMESPACE_GAMES = [
     {"game": "classic1x", "label": "Classic Era", "prefix": "dynamic-classic1x", "auctions": False},
     {"game": "classicann", "label": "Anniversary", "prefix": "dynamic-classicann", "auctions": False},
 ]
+
+
+def namespace_games(conn) -> list[dict]:
+    """NAMESPACE_GAMES, with auctions on for a game version whose daily probe found listings."""
+    live = {ns.rsplit("-", 1)[0] for ns, in conn.execute("SELECT namespace FROM api_probes WHERE ok = 1")}
+    return [{**g, "auctions": g["auctions"] or g["prefix"] in live} for g in NAMESPACE_GAMES]
+
+
+# Era and Anniversary list their auction houses but every listings request has returned 404 since
+# early 2026. Check one house a day so the dashboard says when Blizzard fixes it.
+PROBE_EVERY = 86400
+
+
+def _probe(client: Client, region: str, namespace: str) -> tuple[bool, str]:
+    try:
+        index, _ = client.get(region, namespace, "/data/wow/connected-realm/index")
+        crid = int(index["connected_realms"][0]["href"].split("/connected-realm/")[1].split("?")[0])
+        houses, _ = client.get(region, namespace, f"/data/wow/connected-realm/{crid}/auctions/index")
+        house = houses["auctions"][0]["id"]
+        data, _ = client.get(region, namespace, f"/data/wow/connected-realm/{crid}/auctions/{house}")
+        return True, f"{len(data.get('auctions', []))} listings in connected realm {crid}"
+    except (ApiError, KeyError, IndexError, ValueError) as exc:
+        return False, str(exc)
+
+
+def probe_unpublished(conn, client: Client, regions, now: int | None = None, log=print) -> None:
+    """Once a day per region, ask for one auction house's listings in each game version whose
+    AH data the API doesn't serve; log when that changes."""
+    now = int(time.time()) if now is None else now
+    for g in NAMESPACE_GAMES:
+        if g["auctions"]:
+            continue
+        for region in sorted(regions):
+            ns = f"{g['prefix']}-{region}"
+            row = conn.execute("SELECT checked, ok FROM api_probes WHERE namespace = ?", (ns,)).fetchone()
+            if row and now - row[0] < PROBE_EVERY:
+                continue
+            ok, detail = _probe(client, region, ns)
+            conn.execute("INSERT OR REPLACE INTO api_probes VALUES (?, ?, ?, ?)", (ns, now, int(ok), detail))
+            conn.commit()
+            if ok and not (row and row[1]):
+                log(f"{g['label']} ({region}): Blizzard now serves auction house data ({detail}); "
+                    "it can be added on the Markets page")
+            elif not ok and row and row[1]:
+                log(f"{g['label']} ({region}): auction house data is unavailable again ({detail})")
 
 
 def game_for(namespace: str, override: str | None = None) -> str:

@@ -266,6 +266,7 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
     conn = db.market_conn()
     try:
         rows = services.market_status(conn)
+        games = market.namespace_games(conn)
     finally:
         conn.close()
     status = {m["name"].split(":")[0]: m for m in rows}
@@ -276,7 +277,8 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
             st["realms"] += 1
             st["last_modified"] = max(filter(None, (st["last_modified"], m["last_modified"])), default=None)
     return page(request, "markets.html", user, markets=cfg.get("market", []), status=status, realms=realms,
-                region=region, namespace=namespace, game=game, namespace_games=market.NAMESPACE_GAMES,
+                region=region, namespace=namespace, game=game, namespace_games=games,
+                unlocked=[g["label"] for g, base in zip(games, market.NAMESPACE_GAMES) if g["auctions"] and not base["auctions"]],
                 error=error, game_for=market.game_for, kind=kind, realm=realm)
 
 
@@ -304,7 +306,12 @@ def markets_add(request: Request, name: str = Form(""), region: str = Form("us")
         entry["realm"] = realm.strip()
     if game.strip():
         entry["game"] = game.strip()
-    if kind == "all-realms" and not next((g["auctions"] for g in market.NAMESPACE_GAMES
+    conn = db.market_conn()
+    try:
+        games = market.namespace_games(conn)
+    finally:
+        conn.close()
+    if kind == "all-realms" and not next((g["auctions"] for g in games
                                           if g["game"] == market.game_for(entry["namespace"], entry.get("game"))), True):
         raise HTTPException(400, "that game version has no auction house data in the API")
     if kind not in ("commodities", "realm", "classic", "all-realms") or not entry["name"] or not entry["namespace"]:

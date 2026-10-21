@@ -26,6 +26,8 @@
   </table>
 </section>
 
+{% if unlocked %}<p class="card">Good news: Blizzard's API is serving auction house data for {{ unlocked|join(' and ') }}
+  again, so {{ 'it' if unlocked|length == 1 else 'they' }} can be added below.</p>{% endif %}
 <div class="grid">
   <section class="card">
     <h2>Add a market</h2>

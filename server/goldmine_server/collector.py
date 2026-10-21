@@ -91,6 +91,10 @@ class Collector:
                     except Exception as exc:  # the rows stay in the hot tables; next run retries
                         self.add(f"archiving failed: {exc}")
                     try:
+                        market.probe_unpublished(conn, client, {m["region"] for m in cfg["market"]}, log=self.add)
+                    except Exception as exc:  # a check, nothing depends on it
+                        self.add(f"API check failed: {exc}")
+                    try:
                         from . import account  # late: account -> marketdata -> services -> collector
                         account.refresh_item_info(conn, client, cfg, log=self.add)
                     except Exception as exc:  # item details are nice to have; don't fail the run
