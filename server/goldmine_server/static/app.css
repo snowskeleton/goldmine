@@ -8,6 +8,7 @@
           --accent: #e3a21a; --accent-fg: #1a1406; --bad: #ff6b5b; --good: #6fcf73; --code: #2a271e; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg);
        font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--accent); }

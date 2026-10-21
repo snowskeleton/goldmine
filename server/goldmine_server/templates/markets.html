@@ -29,53 +29,49 @@
 <div class="grid">
   <section class="card">
     <h2>Add a market</h2>
-    <form method="post" action="/markets/add" class="stack">
-      <label>Name <input name="name" required placeholder="us-proudmoore"></label>
-      <label>Kind
-        <select name="kind">
-          <option value="realm">realm (one realm's auction house)</option>
-          <option value="commodities">commodities (region-wide stackables)</option>
-          <option value="classic">classic (per-faction houses)</option>
-          <option value="all-realms">all realms (every realm in the namespace not added on its own)</option>
+    <form method="post" action="/markets/add" class="stack" id="add-market">
+      <label>Collect
+        <select name="kind" onchange="marketKind(this.form)">
+          <option value="realm" {{ 'selected' if kind == 'realm' }}>One realm's auction house</option>
+          <option value="all-realms" {{ 'selected' if kind == 'all-realms' }}>Every realm in the region</option>
+          <option value="commodities" {{ 'selected' if kind == 'commodities' }}>Commodities (region-wide stackables)</option>
+          <option value="classic" {{ 'selected' if kind == 'classic' }}>One realm's per-faction houses (older Classic)</option>
         </select>
       </label>
-      <label>Region <input name="region" value="us"></label>
-      <label>Namespace <input name="namespace" required placeholder="dynamic-us"></label>
-      <label>Realm slug <input name="realm" placeholder="proudmoore (not needed for commodities or all realms)"></label>
-      <label>Game <input name="game" placeholder="auto from namespace"></label>
+      <label>Region
+        <select name="region" onchange="marketChoices(this.form)">
+          {% for r in ['us', 'eu', 'kr', 'tw'] %}<option {{ 'selected' if r == region }}>{{ r }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Game
+        <select name="game" onchange="marketChoices(this.form)">
+          {% for g in namespace_games %}<option value="{{ g.game }}" {{ 'selected' if g.game == game }} {{ '' if g.auctions else 'disabled' }}>{{ g.label }}{{ '' if g.auctions else ' (no AH data)' }}</option>{% endfor %}
+          <option value="other" {{ 'selected' if game == 'other' }}>Other…</option>
+        </select>
+      </label>
+      <label data-for="other" {{ 'hidden' if game != 'other' }}>API namespace
+        <span class="row"><input name="namespace" value="{{ namespace if game == 'other' }}" placeholder="dynamic-classic-{{ region }}"
+          {{ 'disabled' if game != 'other' }}><button type="button" onclick="marketChoices(this.form)">Load realms</button></span>
+      </label>
+      <label data-kinds="realm classic">Realm
+        <select name="realm" {{ 'disabled' if not realms }}>
+          {% for r in realms|sort(attribute='name') %}<option value="{{ r.slug }}" {{ 'selected' if r.slug == realm }}>{{ r.name }}</option>
+          {% else %}<option value="">{{ error or 'No realms loaded' }}</option>{% endfor %}
+        </select>
+      </label>
+      <details>
+        <summary class="muted">Name (optional)</summary>
+        <label>Name <input name="name" placeholder="automatic, e.g. {{ region }}-proudmoore"></label>
+      </details>
       <button class="primary">Add market</button>
     </form>
+    <p class="muted">Realms you add on their own are skipped by "Every realm". Data for a game version never mixes
+      with another's.</p>
   </section>
   <section class="card">
-    <h2>Browse realms</h2>
-    <form method="get" action="/markets" class="row">
-      <select name="region">{% for r in ['us','eu','kr','tw'] %}<option {{ 'selected' if r == region }}>{{ r }}</option>{% endfor %}</select>
-      <select name="game" onchange="toggleOther(this)" title="Game version (picks the API namespace)">
-        {% for g in namespace_games %}<option value="{{ g.game }}" {{ 'selected' if g.game == game }}>{{ g.label }}{{ '' if g.auctions else ' (no AH data)' }}</option>{% endfor %}
-        <option value="other" {{ 'selected' if game == 'other' }}>Other…</option>
-      </select>
-      <input name="namespace" id="other-namespace" value="{{ namespace if game == 'other' }}" placeholder="dynamic-{{ region }}"
-             {{ 'hidden disabled' if game != 'other' else 'required' }}>
-      <button>Load</button>
-    </form>
-    <p class="muted">The game version sets the API namespace, e.g. <code>dynamic-classic-{{ region }}</code>.
-      Use Other for any namespace not listed. See Blizzard's namespace docs:
-      <a href="https://community.developer.battle.net/documentation/world-of-warcraft/guides/namespaces" target="_blank" rel="noopener">retail</a>,
-      <a href="https://community.developer.battle.net/documentation/world-of-warcraft-classic/guides/namespaces" target="_blank" rel="noopener">classic</a>.</p>
+    <h2>Realms in {{ region }} {{ (namespace_games|selectattr('game', 'equalto', game)|map(attribute='label')|first) or namespace }}</h2>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    {% if namespace and not error %}
-      <form method="post" action="/markets/add" class="inline">
-        <input type="hidden" name="name" value="{{ region }}-{{ game_for(namespace) }}-commodities">
-        <input type="hidden" name="kind" value="commodities"><input type="hidden" name="region" value="{{ region }}">
-        <input type="hidden" name="namespace" value="{{ namespace }}">
-        <button class="link">+ Add {{ region }} commodities for this namespace</button>
-      </form>
-      <form method="post" action="/markets/add" class="inline">
-        <input type="hidden" name="name" value="{{ region }}-{{ game_for(namespace) }}-all-realms">
-        <input type="hidden" name="kind" value="all-realms"><input type="hidden" name="region" value="{{ region }}">
-        <input type="hidden" name="namespace" value="{{ namespace }}">
-        <button class="link" title="Each connected realm becomes its own market; realms you add on their own are skipped">+ Collect every {{ region }} realm in this namespace</button>
-      </form>
+    {% if realms %}
       <input type="search" placeholder="Filter realms" oninput="filterRows(this, 'realms')">
       <div class="scroll">
       <table id="realms">
@@ -83,13 +79,18 @@
         {% for r in realms %}
         <tr><td>{{ r.name }}</td><td>{{ r.type or '' }}</td><td>{{ r.category or '' }}</td><td class="num">{{ r.connected_realm_id }}</td>
           <td><form method="post" action="/markets/add" class="inline">
-            <input type="hidden" name="name" value="{{ region }}-{{ r.slug }}"><input type="hidden" name="kind" value="realm">
-            <input type="hidden" name="region" value="{{ region }}"><input type="hidden" name="namespace" value="{{ namespace }}">
-            <input type="hidden" name="realm" value="{{ r.slug }}"><button class="link">Add</button></form></td></tr>
-        {% else %}<tr><td colspan="5" class="muted">No realms.</td></tr>{% endfor %}
+            <input type="hidden" name="kind" value="realm"><input type="hidden" name="region" value="{{ region }}">
+            <input type="hidden" name="namespace" value="{{ namespace }}"><input type="hidden" name="realm" value="{{ r.slug }}">
+            <button class="link">Add</button></form></td></tr>
+        {% endfor %}
       </table>
       </div>
-    {% endif %}
+    {% elif not error %}<p class="muted">No realms.</p>{% endif %}
+    <p class="muted">Realms in one group share an auction house. The game version picks Blizzard's API namespace
+      (<a href="https://community.developer.battle.net/documentation/world-of-warcraft/guides/namespaces" target="_blank" rel="noopener">retail</a>,
+      <a href="https://community.developer.battle.net/documentation/world-of-warcraft-classic/guides/namespaces" target="_blank" rel="noopener">classic</a>);
+      use Other for one that isn't listed.</p>
   </section>
 </div>
 {% endblock %}
+{% block scripts %}<script>marketKind(document.getElementById("add-market"));</script>{% endblock %}

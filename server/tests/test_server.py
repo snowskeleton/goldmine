@@ -331,6 +331,20 @@ class ServerFlow(unittest.TestCase):
                                                   "namespace": "dynamic-classic1x-us"})
         self.assertEqual(r.status_code, 400)  # Classic Era has no AH data in the API
         self.admin.post("/markets/remove", data={"name": "us-retail-all-realms"})
+        # The form posts a game version instead of a namespace, and the name can be left blank.
+        for form, want in [({"kind": "realm", "game": "retail", "realm": "proudmoore"},
+                            {"name": "us-proudmoore", "namespace": "dynamic-us", "realm": "proudmoore"}),
+                           ({"kind": "realm", "game": "classic", "region": "eu", "realm": "pagle"},
+                            {"name": "eu-classic-pagle", "namespace": "dynamic-classic-eu", "realm": "pagle"}),
+                           ({"kind": "all-realms", "game": "retail"},
+                            {"name": "us-retail-all-realms", "namespace": "dynamic-us"}),
+                           ({"kind": "commodities", "game": "other", "namespace": "dynamic-foo-us"},
+                            {"name": "us-foo-commodities", "namespace": "dynamic-foo-us"})]:
+            self.assertEqual(self.admin.post("/markets/add", data={"region": "us", **form}).status_code, 303)
+            added = market.load_config(settings.CONFIG)["market"][-1]
+            self.assertEqual({k: added.get(k) for k in want}, want)
+            self.assertNotIn("game", added)
+            self.admin.post("/markets/remove", data={"name": added["name"]})
 
     def test_12b_browse_realms_namespace(self):
         from unittest import mock
@@ -342,9 +356,8 @@ class ServerFlow(unittest.TestCase):
             self.assertEqual(lr.call_args[0][1:], ("us", "dynamic-foo-us"))
             text = self.admin.get("/markets", params={"region": "us", "namespace": "dynamic-classic1x-us"}).text
             self.assertIn('value="classic1x" selected', text)  # old ?namespace= links preselect the game
-            lr.reset_mock()
             self.admin.get("/markets")
-            lr.assert_not_called()
+            self.assertEqual(lr.call_args[0][1:], ("us", "dynamic-us"))  # the realm dropdown defaults to US retail
 
     def test_12c_api_namespaces(self):
         from goldmine_server import market

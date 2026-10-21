@@ -127,6 +127,32 @@ function filterRows(input, tableId) {
   });
 }
 
+// Markets page: show the fields the chosen kind needs, and reload the realm list for a new region/game.
+function marketKind(form) {
+  const kind = form.kind.value;
+  form.querySelectorAll("[data-kinds]").forEach(el => {
+    const on = el.dataset.kinds.split(" ").includes(kind);
+    el.hidden = !on;
+    el.querySelectorAll("select, input").forEach(f => { f.disabled = !on; });
+  });
+}
+
+function marketChoices(form) {
+  const q = new URLSearchParams({region: form.region.value, game: form.game.value, kind: form.kind.value});
+  if (form.game.value === "other") {
+    const ns = form.namespace.value.trim();
+    if (!ns) {
+      const label = form.querySelector('[data-for="other"]');
+      label.hidden = false;
+      form.namespace.disabled = false;
+      form.namespace.focus();
+      return;
+    }
+    q.set("namespace", ns);
+  }
+  location = "/markets?" + q;
+}
+
 function toggleOther(select) {
   const other = document.getElementById("other-namespace");
   const on = select.value === "other";

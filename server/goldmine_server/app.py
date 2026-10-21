@@ -241,15 +241,20 @@ def realms_for(api: dict, region: str, namespace: str) -> list[dict]:
     return realms
 
 
+def namespace_for(region: str, game: str, namespace: str = "") -> str:
+    """The API namespace for a game version picked on the Markets page ('other' = as typed)."""
+    prefix = next((g["prefix"] for g in market.NAMESPACE_GAMES if g["game"] == game), None)
+    return f"{prefix}-{region}" if prefix else namespace.strip()
+
+
 @app.get("/markets", response_class=HTMLResponse)
-def markets_page(request: Request, region: str = "us", game: str = "", namespace: str = "",
-                 user: User = Depends(auth.require_admin)):
+def markets_page(request: Request, region: str = "us", game: str = "", namespace: str = "", kind: str = "realm",
+                 realm: str = "", user: User = Depends(auth.require_admin)):
     prefixes = {g["game"]: g["prefix"] for g in market.NAMESPACE_GAMES}
     namespace = namespace.strip()
-    if game in prefixes:
-        namespace = f"{prefixes[game]}-{region}"
-    elif not game:  # plain ?namespace= links still work; preselect the matching game
+    if not game:  # plain ?namespace= links still work; preselect the matching game
         game = next((k for k, p in prefixes.items() if namespace == f"{p}-{region}"), "other" if namespace else "retail")
+    namespace = namespace_for(region, game, namespace)
     cfg = load_config()
     realms, error = [], None
     if namespace:
@@ -272,15 +277,27 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
             st["last_modified"] = max(filter(None, (st["last_modified"], m["last_modified"])), default=None)
     return page(request, "markets.html", user, markets=cfg.get("market", []), status=status, realms=realms,
                 region=region, namespace=namespace, game=game, namespace_games=market.NAMESPACE_GAMES,
-                error=error, game_for=market.game_for)
+                error=error, game_for=market.game_for, kind=kind, realm=realm)
 
 
 @app.post("/markets/add")
-def markets_add(request: Request, name: str = Form(...), region: str = Form("us"), namespace: str = Form(...),
+def markets_add(request: Request, name: str = Form(""), region: str = Form("us"), namespace: str = Form(""),
                 kind: str = Form(...), realm: str = Form(""), game: str = Form(""),
                 user: User = Depends(auth.require_admin)):
+    """game is a Markets page game version (it picks the namespace) or, with a namespace given,
+    an override stored on the market. A blank name gets a default from the region and kind."""
     cfg = load_config()
-    entry = {"name": name.strip(), "region": region.strip().lower(), "namespace": namespace.strip(), "kind": kind}
+    region = region.strip().lower()
+    picked = any(g["game"] == game for g in market.NAMESPACE_GAMES)
+    namespace = namespace_for(region, game, namespace) if picked else namespace.strip()
+    if picked or game == "other":
+        game = ""  # the namespace already says which game it is
+    if not name.strip():  # us-commodities, us-proudmoore, us-retail-all-realms, us-classic-pagle
+        label = market.game_for(namespace, game or None)
+        prefix = region if label == "retail" or kind == "all-realms" else f"{region}-{label}"
+        name = {"commodities": f"{prefix}-commodities", "all-realms": f"{prefix}-{label}-all-realms"}.get(
+            kind, f"{prefix}-{realm.strip()}")
+    entry = {"name": name, "region": region, "namespace": namespace, "kind": kind}
     if kind not in ("commodities", "all-realms"):
         if not realm.strip():
             raise HTTPException(400, "realm markets need a realm slug")
