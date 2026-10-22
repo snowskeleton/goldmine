@@ -244,7 +244,8 @@ charge, at this realm's size". Deals keep using your realm's own history but eac
 verdict: *confirmed* (cheap elsewhere too), *normal* (the usual price elsewhere, so it's your
 realm's own history that's off) or *partial*. Price history charts draw the region line and,
 with "Compare with", another realm's price rescaled to yours; the axis goes logarithmic when the
-lines are far apart. The size effect is re-fitted from the data on every rollup.
+lines are far apart. An item's charts (each market, pet breed and gear variant) share one price
+and time axis so they compare at a glance. The size effect is re-fitted from the data on every rollup.
 
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is

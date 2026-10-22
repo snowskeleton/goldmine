@@ -277,6 +277,8 @@
   // Realm charts can add overlays (data-overlays): the region baseline sized like this realm, the
   // plain region median, another realm. Click a legend entry to show or hide its line. When the
   // lines are far apart (one 50x the other), the price axis goes logarithmic so both stay readable.
+  // An item's charts (one per market and variant) share their price and time axes so they compare at
+  // a glance; toggling a line redraws the whole group.
   const SERIES = [["min", "Lowest", "var(--s1)"], ["p10", "P10", "var(--s2)"], ["median", "Median", "var(--s3)"]];
   const OVERLAY_STYLE = {
     region: { c: "var(--s4)", w: 2.5, dash: "", on: true },
@@ -297,9 +299,13 @@
       for (const m of mults) { const v = m * 10 ** e; if (v >= lo && v <= hi) out.push(v); }
     return out;
   }
+  const pgroups = new Map();
   document.querySelectorAll(".pchart").forEach((box) => {
     const pts = JSON.parse(box.dataset.points);
     if (!pts.length) return;
+    const gkey = box.closest(".report") || box;
+    if (!pgroups.has(gkey)) pgroups.set(gkey, []);
+    const group = pgroups.get(gkey);
     const lines = SERIES.map(([k, label, c]) => ({ k, label, c, w: 2, dash: "", on: true }))
       .concat(JSON.parse(box.dataset.overlays || "[]").map(([k, label]) => ({ k, label, ...OVERLAY_STYLE[k] })));
     const legend = document.createElement("div");
@@ -315,16 +321,22 @@
       if (!b) return;
       lines[+b.dataset.i].on = !lines[+b.dataset.i].on;
       drawLegend();
-      draw();
+      group.forEach((g) => g.draw());
     });
     drawLegend();
+    const member = {
+      t0: pts[0].t, t1: pts[pts.length - 1].t + 1,
+      vals: () => pts.flatMap((p) => lines.filter((l) => l.on).map((l) => p[l.k]).filter((v) => v != null && v > 0)),
+      draw,
+    };
+    group.push(member);
     function draw() {
       box.replaceChildren();
       const shown = lines.filter((l) => l.on);
       const W = Math.max(320, box.clientWidth), H = 260, top = 8, priceH = 170, gap = 18, qtyH = 50, left = 64, right = 12;
       const tNow = Date.now() / 1000;
-      const t0 = pts[0].t, t1 = Math.max(tNow, pts[pts.length - 1].t + 1);
-      const vals = pts.flatMap((p) => shown.map((l) => p[l.k]).filter((v) => v != null && v > 0));
+      const t0 = Math.min(...group.map((g) => g.t0)), t1 = Math.max(tNow, ...group.map((g) => g.t1));
+      const vals = group.flatMap((g) => g.vals());
       if (!vals.length) vals.push(1);
       let lo = Math.min(...vals), hi = Math.max(...vals);
       const logScale = hi / lo > 20;
@@ -380,6 +392,11 @@
         const r = svg.getBoundingClientRect();
         const px = (e.clientX - r.left) * (W / r.width);
         const t = t0 + ((px - left) / (W - left - right)) * (t1 - t0);
+        if (t < pts[0].t) {  // before this variant was first seen (the group's axis starts earlier)
+          cross.setAttribute("visibility", "hidden");
+          dots.forEach((d) => d.setAttribute("visibility", "hidden"));
+          return hideTip();
+        }
         let i = 0;
         while (i + 1 < pts.length && pts[i + 1].t <= t) i++;
         const p = pts[i];
@@ -402,8 +419,8 @@
         hideTip();
       });
     }
-    draw();
   });
+  pgroups.forEach((group) => group.forEach((g) => g.draw()));
 
   // ---- flips price index: UTC [weekday][hour] ratios, rotated into local time; diverging blue (cheap) / red (dear)
   document.querySelectorAll(".pindex").forEach((box) => {
