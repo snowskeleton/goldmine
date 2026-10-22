@@ -84,11 +84,14 @@ LEARNING_TOOLS = [
     _tool("get_lots", "Cost-basis lots",
           "FIFO lots from your AH ledger: open lots at cost and at conservative value (min(market value, p25 of "
           "definite sales over 14d) x 0.95 - a deposit; 0 with no sales; halved past max hold), days held, realized "
-          "P&L per item, deposit/cancel fees, purchases and sales that couldn't be matched to an item or lot.",
+          "P&L per item, deposit/cancel fees, purchases and sales that couldn't be matched to an item or lot. Crafts "
+          "take their reagents (less resourcefulness returns) from the oldest lots and open a lot of the output "
+          "(tag craft) at that cost; reagents with no lot are costed at their lowest listing (estimated). crafts: "
+          "the last 50 with cost per reagent; craft_totals.",
           {"realm": _realm, "tags": _tags, "max_hold_days": _hold},
           [], lambda conn, **kw: lots.get_lots(conn, **kw), user_db=True),
     _tool("get_scorecard", "Scorecard",
-          "Per strategy tag: realized P&L, ROI, sell-through, days held, open exposure at cost and conservative value; "
+          "Per strategy tag: realized P&L, ROI, sell-through (sold or used in crafts), days held, open exposure at cost and conservative value; "
           "weekly realized gold growth (AH cash flow); prediction error of journal hypotheses with "
           "prediction.realized.",
           {"realm": _realm, "tags": _tags, "max_hold_days": _hold},
@@ -197,7 +200,7 @@ ACCOUNT_TOOLS = [
           [], lambda conn, **kw: acct.recipes(conn, **kw), user_db=True),
     _tool("get_craft_results", "Craft results",
           "Crafts you made, newest first (quantity, quality, multicraft extra items, resources returned, "
-          "concentration spent), and by_recipe totals with proc rates and average quality. Default: last 30 days.",
+          "concentration spent, reagents one craft used, crafting order id), and by_recipe totals with proc rates and average quality. Default: last 30 days.",
           {"since": _since, "char": _char, "recipe": {"type": "integer"},
            "item": {"type": ["integer", "string"], "description": "Crafted item id or name"},
            "limit": _limit, "offset": _offset},

@@ -14,6 +14,7 @@ from goldmine_server import journal, ledger, lots, market, store  # noqa: E402
 HOUR, DAY = 3600, 86400
 T0 = 1792022400
 ORE = 210930
+BAR = 222417
 CHAR = "Snow-Proudmoore"
 
 
@@ -103,6 +104,76 @@ class LotTests(unittest.TestCase):
         self.assertEqual(r["estimated_qty_sales"], 1)
         self.assertEqual(r["realized_by_item"][0]["units"], 4)
         self.assertEqual(r["open_lots"][0]["qty"], 6)
+
+    def craft(self, ts, item, qty, reagents, returned=(), order=None, estimated=False, cid=None, char=CHAR):
+        self.seq += 1
+        self.conn.execute("INSERT INTO craft_results (id, char_key, ts, recipe_id, item_id, quantity, multicraft, "
+                          "returned, reagents, reagents_estimated, order_id) VALUES (?, ?, ?, 100, ?, ?, 0, ?, ?, ?, ?)",
+                          (cid or f"{char}:c{self.seq}", char, ts, item, qty, json.dumps([list(r) for r in returned]),
+                           None if reagents is None else json.dumps([list(r) for r in reagents]),
+                           1 if estimated else 0, order))
+
+    def test_craft_moves_reagent_cost_to_the_output(self):
+        self.conn.execute("INSERT INTO items VALUES (?, 'Bismuth Bar', 'COMMON', 0)", (BAR,))
+        self.tx(T0, -1000, "auction_buy", {"item_id": ORE, "qty": 10}, item_id=ORE)
+        # 4 ore per craft, resourcefulness hands 1 back, multicraft makes 2: 300 copper for 2 bars.
+        self.craft(T0 + HOUR, BAR, 2, [(ORE, 4)], returned=[(ORE, 1)])
+        self.tx(T0 + DAY, 950, "auction_sale", {"item": "Bismuth Bar", "price": 1000, "cut": 50, "deposit": 0,
+                                                "qty": 2}, item_name="Bismuth Bar")
+        self.conn.commit()
+        r = lots.get_lots(self.conn)
+        [ore] = r["open_lots"]
+        self.assertEqual((ore["item_id"], ore["qty"], ore["cost"]), (ORE, 7, 700))
+        [bar] = [x for x in r["realized_by_item"] if x["item_id"] == BAR]
+        self.assertEqual((bar["units"], bar["cost"], bar["realized"]), (2, 300, 650))
+        self.assertEqual(r["unmatched_sales"], [])
+        [c] = r["crafts"]
+        self.assertEqual((c["cost"], c["unit_cost"], c["reagents_source"], c["fully_priced"]), (300, 150, "recorded", True))
+        self.assertEqual(c["reagents"][0]["from_lots"], 3)
+        self.assertEqual(c["name"], "Bismuth Bar")
+        by = {s["strategy"]: s for s in lots.get_scorecard(self.conn)["strategies"]}
+        self.assertEqual((by["craft"]["units_bought"], by["craft"]["units_sold"], by["craft"]["realized"]), (2, 2, 650))
+        self.assertEqual((by["untagged"]["units_crafted_with"], by["untagged"]["sell_through"]), (3, 0.3))
+
+    def test_craft_reagents_without_a_lot_are_costed_at_market(self):
+        store.store_snapshot(self.conn, "us-commodities", {"auctions": [
+            {"id": 1, "item": {"id": ORE}, "quantity": 50, "unit_price": 250, "time_left": "LONG"}]}, T0)
+        self.tx(T0 - DAY, -200, "auction_buy", {"item_id": ORE, "qty": 2}, item_id=ORE)
+        self.craft(T0 + 60, BAR, 1, [(ORE, 4), (999, 1)])   # 2 from the lot, 2 farmed, 1 never listed
+        self.conn.commit()
+        r = lots.get_lots(self.conn)
+        [c] = r["crafts"]
+        self.assertEqual(c["cost"], 200 + 2 * 250)
+        self.assertFalse(c["fully_priced"])
+        self.assertEqual([(p["estimated_units"], p["estimated_cost"], p["unpriced"]) for p in c["reagents"]],
+                         [(2, 500, False), (1, 0, True)])
+        [lot] = r["open_lots"]
+        self.assertEqual((lot["item_id"], lot["tag"], lot["cost"]), (BAR, "craft", 700))
+        self.assertEqual(r["craft_totals"]["estimated_cost"], 500)
+
+    def test_order_craft_uses_reagents_without_a_lot(self):
+        self.tx(T0, -1000, "auction_buy", {"item_id": ORE, "qty": 10}, item_id=ORE)
+        self.craft(T0 + 60, BAR, 1, [(ORE, 4)], order=4242)
+        self.conn.commit()
+        r = lots.get_lots(self.conn)
+        self.assertEqual([(x["item_id"], x["qty"]) for x in r["open_lots"]], [(ORE, 6)])
+        self.assertEqual((r["crafts"][0]["cost"], r["craft_totals"]["order_crafts"]), (400, 1))
+
+    def test_old_craft_falls_back_to_recipe_reagents(self):
+        self.tx(T0, -1000, "auction_buy", {"item_id": ORE, "qty": 10}, item_id=ORE)
+        self.conn.execute("INSERT INTO recipe_reagents VALUES (?, 100, ?, 5)", (CHAR, ORE))
+        self.craft(T0 + 60, BAR, 1, None)
+        self.craft(T0 + 120, BAR, 1, None, char="Alt-Proudmoore")   # another character, same recipe
+        self.conn.execute("UPDATE craft_results SET recipe_id = 7 WHERE ts = ?", (T0 + 120,))
+        self.craft(T0 + 180, BAR, 1, None)
+        self.conn.execute("UPDATE craft_results SET recipe_id = 8 WHERE ts = ?", (T0 + 180,))
+        self.conn.commit()
+        r = lots.get_lots(self.conn)
+        sources = [c["reagents_source"] for c in r["crafts"]]
+        self.assertEqual(sources, [None, None, "recipe"])
+        self.assertEqual(r["craft_totals"]["without_reagents"], 2)
+        self.assertEqual(sorted((x["item_id"], x["qty"], x["cost"]) for x in r["open_lots"]),
+                         [(ORE, 5, 500), (BAR, 1, 500)])
 
     def test_realm_filter(self):
         self.tx(T0, -1000, "auction_buy", {"item_id": ORE, "qty": 10}, item_id=ORE, char="Alt-Stormrage")

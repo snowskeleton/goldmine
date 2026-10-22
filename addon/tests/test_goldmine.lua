@@ -347,6 +347,34 @@ local craft = GoldmineDB.crafts and GoldmineDB.crafts[1]
 expect("craft result recorded", craft and #GoldmineDB.crafts == 1 and craft.r == 100 and craft.q == 2
     and craft.mc == 1 and craft.ql == 3 and craft.cs == 30 and craft.rs[1] == 2589 and craft.rs[2] == 1
     and craft.id == "Snow-Testrealm:c1")
+expect("craft reagents fall back to the recipe's basic slot", craft.rg and #craft.rg == 2 and craft.rg[1] == 2589
+    and craft.rg[2] == 2 and craft.rge == true and craft.ord == nil)
+
+-- Reagents the UI passed win over the schematic: a chosen quality covers its slot, optional
+-- reagents are kept. On a crafting order nothing is filled in from the schematic.
+local schematic = C_TradeSkillUI.GetRecipeSchematic
+C_TradeSkillUI.GetRecipeSchematic = function()
+    return { outputItemID = 2996, reagentSlotSchematics = {
+        { reagentType = 1, quantityRequired = 2, dataSlotIndex = 1, reagents = { { itemID = 2589 }, { itemID = 2590 } } },
+        { reagentType = 1, quantityRequired = 1, dataSlotIndex = 2, reagents = { { itemID = 2321 } } },
+    } }
+end
+C_TradeSkillUI.CraftRecipe(100, 2, { { itemID = 2590, quantity = 2, dataSlotIndex = 1 },
+    { reagent = { itemID = 999 }, quantity = 1, dataSlotIndex = 3 } })
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { itemID = 2996, quantity = 1 })
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { itemID = 2996, quantity = 1 })
+local c2, c3 = GoldmineDB.crafts[2], GoldmineDB.crafts[3]
+expect("passed reagents recorded per craft", c2.rg[1] == 2590 and c2.rg[2] == 2 and c2.rg[3] == 999 and c2.rg[4] == 1
+    and c2.rg[5] == 2321 and c2.rg[6] == 1 and #c2.rg == 6 and c2.rge == true and c3.rg ~= c2.rg and #c3.rg == 6)
+C_TradeSkillUI.CraftRecipe(100, 1, { { itemID = 2590, quantity = 2, dataSlotIndex = 1 } }, nil, 4242)
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { itemID = 2996, quantity = 1 })
+local c4 = GoldmineDB.crafts[4]
+expect("order craft keeps only our reagents", #c4.rg == 2 and c4.rg[1] == 2590 and c4.ord == 4242 and c4.rge == nil)
+fire("TRADE_SKILL_ITEM_CRAFTED_RESULT", { recipeID = 555, itemID = 1, quantity = 1 })
+expect("another recipe's result gets no reagents", GoldmineDB.crafts[5].rg == nil)
+for i = 5, 2, -1 do GoldmineDB.crafts[i] = nil end
+GoldmineDB.craftSeq = 1
+C_TradeSkillUI.GetRecipeSchematic = schematic
 
 Enum.BagIndex = { Backpack = 0, Bag_1 = 1, ReagentBag = 5, CharacterBankTab_1 = 6, AccountBankTab_1 = 12 }
 Enum.PlayerInteractionType.Banker = 8

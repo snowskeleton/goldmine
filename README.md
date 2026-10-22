@@ -7,8 +7,8 @@ export to CSV.
 ```
 addon/Goldmine/
   Goldmine.lua    money ledger: every gold change + its source
-  Market.lua      records AH prices you browse, your recipes (+ crafting operation info) and craft
-                  results, professions, bags/bank/warband contents and warband gold, your own
+  Market.lua      records AH prices you browse, your recipes (+ crafting operation info), crafts
+                  (+ reagents used), professions, bags/bank/warband contents and warband gold, your own
                   auctions, AH mail (sale invoices), crafting orders
   Advice.lua      price tooltips, /goldmine crafts, /goldmine deals (from Data.lua)
   Data.lua        downloaded from the server by `goldmine.py push` (not in git; the addon works without it)
@@ -292,6 +292,11 @@ The tests run against a mock, so these need checking in the real client
   `C_TradeSkillUI.GetCraftingOperationInfo(recipeID, {}, nil, false)` / the
   `TRADE_SKILL_ITEM_CRAFTED_RESULT` payload fields (`multicraft`, `resourcesReturned`,
   `concentrationSpent`) match what Market.lua reads.
+- Craft reagents: what `C_TradeSkillUI.CraftRecipe(recipeID, count, craftingReagents, level,
+  orderID)` gets from the profession window: whether `craftingReagents` lists basic reagents of
+  every quality or only modified/optional ones, whether entries are `{itemID, quantity,
+  dataSlotIndex}` or `{reagent = {itemID}, ...}`, and that `quantity` is per craft. Also whether
+  `TRADE_SKILL_ITEM_CRAFTED_RESULT`'s `quantity` already includes multicraft extras.
 - Crafting orders: that `C_CraftingOrders.GetCrafterOrders()`/`GetCrafterBuckets()` hold the
   orders the tab last requested (read after hooking `RequestCrafterOrders`), and the
   `CRAFTINGORDERS_*` event names.
@@ -414,7 +419,7 @@ read-only, see `docs/trader.md`):
 | `get_owned_auctions` | your auctions from each character's latest Auctions-tab list: unit price, quantity, active/sold, time left; `include_ended` adds ones that dropped off the list |
 | `get_ledger` | gold changes newest first, with per-source totals (`since`/`until` as unix seconds, `7d`, or a date; `source`, `item`, `char`) |
 | `get_recipes` | known recipes, reagents, and crafting operation info (skill vs difficulty, expected quality, multicraft/resourcefulness %, concentration cost), and concentration per profession |
-| `get_craft_results` | crafts made (quality, multicraft, resources returned, concentration) and per-recipe proc rates |
+| `get_craft_results` | crafts made (quality, multicraft, resources returned, concentration, the reagents one craft used, crafting order id) and per-recipe proc rates |
 | `get_token_price` | WoW token price, latest and history (a row per change, collected with the AH snapshots) |
 | `get_auction_mail` | AH mail seen in the inbox: sale invoices (buyer, bid/buyout, deposit, AH cut, money received), won/outbid/expired/cancelled; `sales_by_item` totals |
 | `get_crafting_orders` | crafting orders the crafting orders window showed (public, guild, personal, patron): commission, min quality, reagents provided, patron rewards, expiry; plus the public order board |
@@ -477,8 +482,8 @@ before real gold is used, and keep score afterwards. All read-only except `journ
 |---|---|
 | `backtest` | replay `flip`, `deals` or `craft` over stored history (default: last 30 days): at each decision time (13h and 1h UTC) build the plan the strategy would have published from data up to then, fill it, step on. Realized P&L, ROI, capital used, max drawdown, sell-through, days held, unsold inventory at conservative value, a sample plan, and a `backtest_id` to cite as `bt:<id>` |
 | `evaluate_plan` | score a plan in the Tasks.lua format against what happened after `start_ts`: per-task fills, sales, expiries and fees |
-| `get_lots` | FIFO lots from the AH ledger: open lots at cost and conservative value, days held, realized P&L per item, deposit/cancel fees |
-| `get_scorecard` | per strategy tag: realized P&L, ROI, sell-through, days held, open exposure; weekly AH cash flow; prediction error of journal hypotheses |
+| `get_lots` | FIFO lots from the AH ledger and your crafts: open lots at cost and conservative value, days held, realized P&L per item, deposit/cancel fees, the last 50 crafts with what each reagent cost (`crafts`, `craft_totals`) |
+| `get_scorecard` | per strategy tag: realized P&L, ROI, sell-through (sold or used in crafts), days held, open exposure; weekly AH cash flow; prediction error of journal hypotheses |
 | `journal_write` / `journal_read` | hypotheses, decisions, lessons and notes with strategy, items, a prediction, evidence refs (`task:`, `plan:`, `tx:`, `bt:`, `journal:`), expiry and supersession |
 
 The simulator is deliberately pessimistic (assumptions in `sim.py`'s docstring): buys fill only
@@ -491,6 +496,17 @@ counts vanished listings as partial sales, for a sensitivity check only). Conser
 `min(market value, p25 of definite sale prices over 14 days) x 0.95 - one deposit`, 0 without
 sales, halved past `max_hold_days`. Strategy tags arrive with task results; until then
 `get_lots`/`get_scorecard` take a `tags` map (buy transaction id or item id -> tag).
+
+Crafting carries cost through the lots. The addon records the reagents each craft used (the ones
+the profession window passed to `CraftRecipe`, plus any required slot it left out at its lowest
+quality, flagged `reagents_estimated`). Each craft takes those reagents, less what
+resourcefulness returned, from the oldest lots, and opens a lot of what it made (tag `craft`, or
+the craft id / item id in `tags`) at that cost divided by the units made, so selling a crafted
+item shows real profit instead of an unmatched sale. Reagents with no lot (farmed, vendor,
+mailed in) are costed at their lowest listing at the time (`estimated_cost`; `unpriced` when
+there's none). Crafts from before the addon kept reagents use the recipe's basic reagents
+(`reagents_source: "recipe"`). A crafting order's output goes to the customer: it uses up your
+reagents but opens no lot, and only reagents you supplied are counted.
 
 Local test run without Docker:
 

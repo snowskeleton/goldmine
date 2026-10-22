@@ -178,7 +178,10 @@ CREATE TABLE IF NOT EXISTS craft_results (
     concentration  INTEGER,               -- concentration spent
     ingenuity      INTEGER,               -- 1 = ingenuity proc
     returned       TEXT,                  -- JSON [[item_id, quantity], ...] from resourcefulness
-    operation_id   INTEGER
+    operation_id   INTEGER,
+    reagents       TEXT,                  -- JSON [[item_id, quantity], ...] one craft used (before returns)
+    reagents_estimated INTEGER,           -- 1 = some slot filled in at its lowest quality by the addon
+    order_id       INTEGER                -- crafting order this craft filled (the output isn't ours)
 );
 CREATE INDEX IF NOT EXISTS craft_results_ts ON craft_results(ts);
 CREATE TABLE IF NOT EXISTS owned_auctions (
@@ -235,6 +238,7 @@ CSV_COLUMNS = ["id", "character", "time", "unix_ts", "delta_copper", "delta_gold
 MIGRATIONS = {
     "characters": [("region", "TEXT")],
     "transactions": [("item_id", "INTEGER"), ("item_name", "TEXT")],
+    "craft_results": [("reagents", "TEXT"), ("reagents_estimated", "INTEGER"), ("order_id", "INTEGER")],
 }
 
 _ITEM_ID = re.compile(r"\|Hitem:(\d+)")
@@ -402,10 +406,12 @@ def import_market_data(conn: sqlite3.Connection, data: dict, chars: dict) -> Non
                         WHERE excluded.updated >= warband_money.updated""",
                      (money["m"], money.get("t") or 0, money.get("by")))
     for craft in data.get("crafts") or []:
-        conn.execute("INSERT OR IGNORE INTO craft_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute("INSERT OR IGNORE INTO craft_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (craft["id"], craft["c"], craft["t"], craft.get("r"), craft.get("item"), craft.get("q"),
                       craft.get("ql"), craft.get("mc") or 0, craft.get("cs") or 0, 1 if craft.get("ing") else 0,
-                      json.dumps(_pairs(craft.get("rs"), 2)), craft.get("op")))
+                      json.dumps(_pairs(craft.get("rs"), 2)), craft.get("op"),
+                      json.dumps(_pairs(craft["rg"], 2)) if craft.get("rg") is not None else None,
+                      1 if craft.get("rge") else 0, craft.get("ord")))
     for m in data.get("mail") or []:
         conn.execute("""INSERT INTO auction_mail VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(id) DO UPDATE SET last_seen=MAX(COALESCE(auction_mail.last_seen, 0),

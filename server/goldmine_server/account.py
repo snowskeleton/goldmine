@@ -292,7 +292,10 @@ def craft_results(conn, since=None, char: str | None = None, recipe: int | None 
                         "recipe_id": r["recipe_id"], "item_id": r["item_id"], "name": names.get(r["item_id"]),
                         "quantity": r["quantity"], "quality": r["quality"], "multicraft": r["multicraft"],
                         "concentration": r["concentration"], "ingenuity": bool(r["ingenuity"]),
-                        "returned": [{"item_id": i, "quantity": q} for i, q in json.loads(r["returned"] or "[]")]}
+                        "returned": [{"item_id": i, "quantity": q} for i, q in json.loads(r["returned"] or "[]")],
+                        "reagents": [{"item_id": i, "quantity": q} for i, q in json.loads(r["reagents"])]
+                        if r["reagents"] else None,
+                        "reagents_estimated": bool(r["reagents_estimated"]), "order_id": r["order_id"]}
                        for r in page]}
 
 

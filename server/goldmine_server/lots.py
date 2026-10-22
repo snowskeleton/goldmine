@@ -12,6 +12,13 @@ What the addon records (Goldmine.lua) and how it's used here:
                    net deposit loss = deposits paid - deposits refunded on sales.
   auction_cancel   delta = -fee, no item: account-level fee.
 
+Crafts (craft_results) move cost from reagents to what was made: each craft takes its reagents,
+less what resourcefulness returned, from the oldest lots, and opens a lot of the output (tag
+"craft") at that cost divided by the units made. Reagents with no lot (farmed, vendor, mailed)
+are costed at their lowest listing at the time, flagged estimated. Crafts recorded before the
+addon kept reagents fall back to the recipe's basic reagents. A crafting order's output goes
+to the customer, so it uses up reagents without opening a lot.
+
 Strategy tags come later from task results; until then pass `tags`, mapping a lot ref (the
 buy's transaction id) or an item id to a tag string or {"strategy": ..., "max_hold_days": ...}.
 Everything else is "untagged".
@@ -75,13 +82,8 @@ def _unit_price_at(conn, item: int, ts: int) -> int | None:
     return best[1] if best else None
 
 
-def build(conn, realm: str | None = None, tags: dict | None = None, max_hold_days: float = 7,
-          since: int | None = None, until: int | None = None) -> dict:
-    """Replay AH ledger rows into FIFO lots. -> internal state used by get_lots / get_scorecard."""
-    tags = tags or {}
-    sql = "SELECT id, char_key, ts, delta, source, item_id, item_name, meta FROM transactions WHERE source IN (%s)" % (
-        ",".join("?" * len(AH_SOURCES)))
-    params: list = list(AH_SOURCES)
+def _window(realm, since, until) -> tuple[str, list]:
+    sql, params = "", []
     if realm:
         sql += " AND lower(replace(replace(char_key, ' ', ''), '''', '')) LIKE ?"
         params.append("%-" + realm.lower().replace(" ", "").replace("'", ""))
@@ -91,13 +93,88 @@ def build(conn, realm: str | None = None, tags: dict | None = None, max_hold_day
     if until is not None:
         sql += " AND ts < ?"
         params.append(int(until))
-    rows = conn.execute(sql + " ORDER BY ts, char_key, seq", params).fetchall()
+    return sql, params
+
+
+def _crafts(conn, where: str, params: list) -> list[tuple]:
+    """Crafts as (ts, char, id, recipe, item, qty, reagents, returned, source, estimated, order)."""
+    rows = conn.execute("SELECT ts, char_key, id, recipe_id, item_id, quantity, reagents, returned, "
+                        "reagents_estimated, order_id FROM craft_results WHERE 1 = 1" + where, params).fetchall()
+    recipes: dict = {}
+    for char, recipe, item, qty in conn.execute("SELECT char_key, recipe_id, item_id, quantity FROM recipe_reagents"):
+        recipes.setdefault((char, recipe), []).append([item, qty])
+    out = []
+    for ts, char, cid, recipe, item, qty, reagents, returned, estimated, order in rows:
+        if reagents is not None:
+            used, source = json.loads(reagents), "recorded"
+        else:
+            used = recipes.get((char, recipe)) or next((v for (_, r), v in recipes.items() if r == recipe), None)
+            source, estimated = ("recipe", 1) if used else (None, 0)
+        out.append((ts, char, cid, recipe, item, qty or 1, used or [], json.loads(returned or "[]"), source,
+                    bool(estimated), order))
+    return out
+
+
+def _craft(conn, st: dict, fifos: dict, tags: dict, max_hold_days: float, craft: tuple) -> None:
+    """Take one craft's reagents from the lots and open a lot of what it made."""
+    ts, char, cid, recipe, item, qty, reagents, returned, source, estimated, order = craft
+    back: dict[int, int] = {}
+    for i, n in returned:
+        back[i] = back.get(i, 0) + n
+    parts, cost, priced = [], 0.0, source is not None
+    for i, n in reagents:
+        use = n - back.pop(i, 0)
+        if use <= 0:
+            continue
+        taken = fifos[i].take(use) if i in fifos else []
+        got = sum(k for k, _ in taken)
+        lot_cost = sum(k * lot.unit_cost for k, lot in taken)
+        for k, lot in taken:
+            st["crafted_with"][lot.tag] = st["crafted_with"].get(lot.tag, 0) + k
+        short = use - got
+        unit = _unit_price_at(conn, i, ts) if short > 1e-9 else None
+        if short > 1e-9 and not unit:
+            priced = False
+        cost += lot_cost + (short * unit if unit else 0)
+        parts.append({"item_id": i, "units": use, "from_lots": round(got), "cost_from_lots": round(lot_cost),
+                      "estimated_units": round(short), "estimated_cost": round(short * unit) if unit else 0,
+                      "unpriced": short > 1e-9 and not unit})
+    st["crafts"].append({"id": cid, "character": char, "time": ts, "time_iso": sim.iso(ts), "recipe_id": recipe,
+                         "item_id": item, "quantity": qty, "cost": round(cost), "unit_cost": round(cost / qty),
+                         "reagents_source": source, "reagents_estimated": estimated, "order_id": order,
+                         "fully_priced": priced, "reagents": parts})
+    if order or not source or not item:
+        return  # the customer's item, or nothing known about what it cost
+    tag, hold = _tag_for(tags, cid, int(item))
+    tag = "craft" if tag == "untagged" else tag
+    fifos.setdefault(int(item), sim.Fifo()).add(
+        sim.Lot(qty, cost / qty, ts, tag, cid, None, hold if hold is not None else max_hold_days))
+    b = st["bought"].setdefault((tag, int(item)), [0, 0])
+    b[0] += qty
+    b[1] += cost
+
+
+def build(conn, realm: str | None = None, tags: dict | None = None, max_hold_days: float = 7,
+          since: int | None = None, until: int | None = None) -> dict:
+    """Replay AH ledger rows and crafts into FIFO lots. -> internal state used by get_lots / get_scorecard."""
+    tags = tags or {}
+    where, params = _window(realm, since, until)
+    sql = "SELECT ts, char_key, seq, id, delta, source, item_id, item_name, meta FROM transactions WHERE source IN (%s)" % (
+        ",".join("?" * len(AH_SOURCES)))
+    rows = [r[:3] + ("tx",) + r[3:] for r in conn.execute(sql + where, list(AH_SOURCES) + params)]
+    # A craft sorts before ledger rows of the same second: its output may be posted right away.
+    rows += [c[:2] + (-1, "craft", c) for c in _crafts(conn, where, params)]
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
     names = None
     fifos: dict[int, sim.Fifo] = {}
     st = {"deposits_paid": 0, "deposits_refunded": 0, "cancel_fees": 0, "cuts": 0,
           "unattributed_purchases": {"count": 0, "spent": 0}, "unmatched_sales": [], "realized": [],
-          "estimated_qty_sales": 0, "weekly": {}, "bought": {}}
-    for tid, char, ts, delta, source, item, item_name, meta in rows:
+          "estimated_qty_sales": 0, "weekly": {}, "bought": {}, "crafts": [], "crafted_with": {}}
+    for ts, char, _, kind, *rest in rows:
+        if kind == "craft":
+            _craft(conn, st, fifos, tags, max_hold_days, rest[0])
+            continue
+        tid, delta, source, item, item_name, meta = rest
         m = _meta(meta)
         week = time.strftime("%G-W%V", time.gmtime(ts))
         st["weekly"][week] = st["weekly"].get(week, 0) + delta
@@ -197,8 +274,14 @@ def get_lots(conn, realm: str | None = None, tags: dict | None = None, max_hold_
     """Open lots at cost and at conservative value, and realized P&L per item."""
     state = build(conn, realm, tags, max_hold_days)
     at = _now(conn)
+    crafts = state["crafts"][-50:][::-1]
     items = set(state["fifos"]) | {r["item"] for r in state["realized"] if r["item"]}
+    items |= {c["item_id"] for c in crafts if c["item_id"]} | {p["item_id"] for c in crafts for p in c["reagents"]}
     names = sim._names(conn, items)
+    for c in crafts:
+        c["name"] = names.get(c["item_id"])
+        for p in c["reagents"]:
+            p["name"] = names.get(p["item_id"])
     lots = _open_lots(conn, state, at, names)
     realized = []
     for item, g in sorted(_realized_by(state, lambda r: r["item"]).items(), key=lambda kv: -(kv[1]["proceeds"] - kv[1]["cost"])):
@@ -212,7 +295,19 @@ def get_lots(conn, realm: str | None = None, tags: dict | None = None, max_hold_
             "realized_by_item": realized, "fees": _fees(state),
             "unattributed_purchases": state["unattributed_purchases"],
             "unmatched_sales": state["unmatched_sales"][-50:],
-            "estimated_qty_sales": state["estimated_qty_sales"]}
+            "estimated_qty_sales": state["estimated_qty_sales"],
+            "crafts": crafts, "craft_totals": _craft_totals(state)}
+
+
+def _craft_totals(state: dict) -> dict:
+    cs = state["crafts"]
+    return {"crafts": len(cs), "cost": sum(c["cost"] for c in cs),
+            "cost_from_lots": sum(p["cost_from_lots"] for c in cs for p in c["reagents"]),
+            "estimated_cost": sum(p["estimated_cost"] for c in cs for p in c["reagents"]),
+            "not_fully_priced": sum(1 for c in cs if not c["fully_priced"]),
+            "reagents_from_recipe": sum(1 for c in cs if c["reagents_source"] == "recipe"),
+            "without_reagents": sum(1 for c in cs if c["reagents_source"] is None),
+            "order_crafts": sum(1 for c in cs if c["order_id"])}
 
 
 def _fees(state: dict) -> dict:
@@ -245,7 +340,9 @@ def get_scorecard(conn, realm: str | None = None, tags: dict | None = None, max_
             "strategy": tag, "realized": round(realized), "cost_of_sold": round(g["cost"]),
             "roi": round(realized / g["cost"], 4) if g["cost"] else None,
             "units_bought": units_bought, "units_sold": round(g["units"]),
-            "sell_through": round(g["units"] / units_bought, 4) if units_bought else None,
+            "units_crafted_with": round(state["crafted_with"].get(tag, 0)),
+            "sell_through": round((g["units"] + state["crafted_with"].get(tag, 0)) / units_bought, 4)
+            if units_bought else None,
             "avg_days_held": round(g["days"] / g["units"], 2) if g["units"] else None,
             "open_cost": sum(x["cost"] for x in open_),
             "open_conservative_value": sum(x["conservative_value"] for x in open_),
@@ -261,6 +358,7 @@ def get_scorecard(conn, realm: str | None = None, tags: dict | None = None, max_
             "unattributed_purchases": state["unattributed_purchases"],
             "unmatched_sales": {"count": len(state["unmatched_sales"]),
                                 "proceeds": sum(u["proceeds"] for u in state["unmatched_sales"])},
+            "crafts": _craft_totals(state),
             "predictions": _prediction_errors(conn, state, at)}
 
 

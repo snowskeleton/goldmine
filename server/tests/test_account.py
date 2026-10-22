@@ -134,6 +134,8 @@ class AccountTests(unittest.TestCase):
         (c,) = r["crafts"]
         self.assertEqual((c["recipe_id"], c["name"], c["quantity"], c["multicraft"], c["returned"]),
                          (100, "Bolt of Linen Cloth", 2, 1, [{"item_id": LINEN, "quantity": 1}]))
+        self.assertEqual((c["reagents"], c["reagents_estimated"], c["order_id"]),
+                         ([{"item_id": LINEN, "quantity": 2}], True, None))
         (s,) = r["by_recipe"]
         self.assertEqual((s["crafts"], s["multicraft_rate"], s["resourcefulness_rate"], s["avg_quality"]),
                          (1, 1.0, 1.0, 3))

@@ -12,7 +12,8 @@
 --     outbid, expired and cancelled auctions.
 --   * Crafting orders the crafting orders window shows you (public, guild, personal, patron).
 --   * Crafting operation info per recipe (skill, difficulty, expected quality, multicraft/
---     resourcefulness, concentration cost) and the result of every craft you make.
+--     resourcefulness, concentration cost) and the result of every craft you make, with the
+--     reagents it used up.
 --   * Stack size, binding, expansion and vendor price of items you hold.
 --
 -- The desktop tool imports all of this; scans are keyed by id so re-importing is safe.
@@ -229,12 +230,59 @@ end
 ---------------------------------------------------------------------------
 
 local lastRecipe -- recipe passed to the last CraftRecipe call (result data may not carry it)
+local lastCraft  -- what one craft of that call uses up: { rg = {itemID, qty, ...}, rge, ord }
+
+local function ReagentItem(x)
+    return type(x) == "table" and (x.itemID or (type(x.reagent) == "table" and x.reagent.itemID)) or nil
+end
+
+-- The reagents one craft uses: the ones the UI passed (chosen qualities, optional and finishing
+-- reagents), plus any required basic slot it left out, at its lowest quality (flagged estimated).
+-- On a crafting order the customer supplies what wasn't passed, so nothing is filled in.
+local function CraftReagents(recipeID, passed, orderID)
+    local out, used, slots, estimated = {}, {}, {}, nil
+    for _, x in ipairs(type(passed) == "table" and passed or {}) do
+        local item = ReagentItem(x)
+        if item and (x.quantity or 0) > 0 then
+            out[#out + 1] = item
+            out[#out + 1] = x.quantity
+            used[item] = true
+            if x.dataSlotIndex then slots[x.dataSlotIndex] = true end
+        end
+    end
+    local order = orderID and orderID ~= 0 and orderID or nil
+    local schematic = not order and Safe(C_TradeSkillUI.GetRecipeSchematic, recipeID, false)
+    for _, slot in ipairs(schematic and schematic.reagentSlotSchematics or {}) do
+        local basic = not Enum.CraftingReagentType or slot.reagentType == Enum.CraftingReagentType.Basic
+        local covered = slot.dataSlotIndex ~= nil and slots[slot.dataSlotIndex]
+        for _, r in ipairs(slot.reagents or {}) do
+            local item = ReagentItem(r)
+            if item and used[item] then covered = true end
+        end
+        local first = ReagentItem(slot.reagents and slot.reagents[1])
+        if basic and slot.required ~= false and first and not covered then
+            out[#out + 1] = first
+            out[#out + 1] = slot.quantityRequired or 1
+            estimated = true
+        end
+    end
+    return { rg = out, rge = estimated, ord = order }
+end
 
 local function InstallCraftHook()
     local ui = C_TradeSkillUI
     if lastRecipe ~= nil or not (ui and ui.CraftRecipe and hooksecurefunc) then return end
     lastRecipe = false
-    hooksecurefunc(ui, "CraftRecipe", function(recipeID) lastRecipe = recipeID end)
+    hooksecurefunc(ui, "CraftRecipe", function(recipeID, _, reagents, _, orderID)
+        lastRecipe = recipeID
+        lastCraft = recipeID and CraftReagents(recipeID, reagents, orderID) or nil
+    end)
+    if ui.CraftEnchant then
+        hooksecurefunc(ui, "CraftEnchant", function(recipeID, _, reagents)
+            lastRecipe = recipeID
+            lastCraft = recipeID and CraftReagents(recipeID, reagents) or nil
+        end)
+    end
 end
 
 function handlers.TRADE_SKILL_ITEM_CRAFTED_RESULT(r)
@@ -247,13 +295,16 @@ function handlers.TRADE_SKILL_ITEM_CRAFTED_RESULT(r)
             returned[#returned + 1] = x.quantity or 1
         end
     end
+    local recipe = r.recipeID or lastRecipe or nil
+    local used = lastCraft and recipe == lastRecipe and lastCraft or nil
     db.crafts = db.crafts or {}
     db.craftSeq = (db.craftSeq or 0) + 1
     db.crafts[#db.crafts + 1] = {
         id = ns.charKey .. ":c" .. db.craftSeq, c = ns.charKey, t = time(),
-        r = r.recipeID or lastRecipe or nil, item = r.itemID, q = r.quantity or 1,
+        r = recipe, item = r.itemID, q = r.quantity or 1,
         ql = r.craftingQuality, mc = r.multicraft or 0, rs = returned,
         cs = r.concentrationSpent or 0, ing = r.hasIngenuityProc or nil, op = r.operationID,
+        rg = used and { unpack(used.rg) }, rge = used and used.rge, ord = used and used.ord,
     }
     if #db.crafts > MAX_CRAFTS + 500 then
         local kept = {}
