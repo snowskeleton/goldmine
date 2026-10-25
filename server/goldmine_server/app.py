@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, ledger, market, marketdata, mcp_server, oauth, releases, services, settings, tasks
+from . import auth, db, ledger, market, marketdata, mcp_server, oauth, releases, services, settings, sim, tasks
 from .auth import User
 from .collector import collector, load_config
 
@@ -358,7 +358,7 @@ def markets_pricing(request: Request, name: str = Form(...), user: User = Depend
 def settings_page(request: Request, user: User = Depends(auth.require_admin)):
     cfg = load_config()
     return page(request, "settings.html", user, api=cfg.get("api") or {}, app_cfg=cfg.get("app") or {},
-                storage=services.storage_breakdown(), data_dir=str(settings.DATA))
+                trader_realms=sim.trader_realms(), storage=services.storage_breakdown(), data_dir=str(settings.DATA))
 
 
 @app.post("/settings")
@@ -375,6 +375,19 @@ def settings_save(request: Request, client_id: str = Form(""), client_secret: st
     app_cfg["auto_collect"] = bool(auto_collect)
     save_config(cfg)
     collector.trigger()
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/settings/trader")
+def settings_trader(request: Request, realms: str = Form(""), user: User = Depends(auth.require_admin)):
+    """The realms the trader works on (sim.trader_markets): the first one's characters fund it."""
+    cfg = load_config()
+    names = list(dict.fromkeys(r.strip() for r in realms.split(",") if r.strip()))
+    if names:
+        cfg.setdefault("trader", {})["realms"] = names
+    else:
+        cfg.pop("trader", None)
+    save_config(cfg)
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 

@@ -9,7 +9,9 @@ code.
 
 - **No botting.** The addon never chains protected actions: one click is one AH/craft action,
   and the human reads the live price before clicking. The trader never drives the game client.
-- **Scope:** retail, Proudmoore (`us-proudmoore`) plus `us-commodities`. No material farming.
+- **Scope:** retail. The trader realms (Settings → Trader, default Proudmoore) plus the region's
+  commodity AH (`list_markets` kind `commodities`; on the live server it's `us-retail-commodities`).
+  No material farming.
 - **Time budget:** about 20 min in the morning and 30 min in the evening. Every task carries an estimate
   in minutes; a plan never exceeds the session's budget.
 - **Roles:** the *trader* (a scheduled or on-demand Claude run) uses only the MCP tools. *Engineer*
@@ -50,6 +52,7 @@ The trader publishes a plan through MCP. The client downloads it as `Tasks.lua` 
 GoldmineTasks = {
   plan = "p2026-10-20a", created = 1792500000, expires = 1792540000, -- addon ignores expired plans
   paper = false,            -- paper plans show in the addon but never enable action buttons
+                            -- (only those published with in_game = true; other paper plans stay on the server)
   budget_min = 20,
   tasks = {
     { id = "t1", kind = "buy",  item = 210930, qty = 200, max_unit = 412000,
@@ -65,6 +68,10 @@ GoldmineTasks = {
   },
 }
 ```
+
+A paper plan without `in_game` never reaches the addon: it is scored after the fact with
+`evaluate_plan` (by its id), and it replaces only other paper-only plans, so a real plan in the
+queue stays there. `get_plan`'s `in_game_plan` names the plan Tasks.lua carries.
 
 Prices are copper per unit. `ev` is the trader's expected profit in copper (for sorting and
 scoring). Tasks run in list order; `after = "t1"` marks a dependency.

@@ -215,5 +215,43 @@ class BacktestTests(SimBase):
             sim.backtest(self.conn, "nope")
 
 
+class TraderMarketsTests(SimBase):
+    build_swing = BacktestTests.build_swing
+
+    def add_market(self, name, kind, realms="[]", game="retail", source=None):
+        mid = store.market_id(self.conn, name)
+        self.conn.execute("UPDATE markets SET kind = ?, region = 'us', game = ?, realms = ?, source = ? WHERE mid = ?",
+                          (kind, game, realms, source, mid))
+
+    def test_markets_are_found_by_kind_and_realm(self):
+        self.assertEqual(sim.trader_markets(self.conn, ["Proudmoore", "Aerie Peak"]),
+                         ["us-commodities", "us-proudmoore", "us-aerie-peak"])  # nothing known: default names
+        self.add_market("us-retail-commodities", "commodities")
+        self.add_market("us-classic-commodities", "commodities", game="classic")
+        self.add_market("us-moon-guard", "realm", '["Moon Guard"]')
+        self.add_market("us-aegwynn", "realm", '["Aegwynn", "Bonechewer"]', source="us-retail-all-realms")
+        self.add_market("us-bonechewer-own", "realm", '["Bonechewer"]')
+        self.assertEqual(sim.trader_markets(self.conn, ["moon guard", "Bonechewer", "Aegwynn"]),
+                         ["us-retail-commodities", "us-moon-guard", "us-bonechewer-own", "us-aegwynn"])
+
+    def test_backtest_finds_a_renamed_commodity_market(self):
+        self.build_swing()
+        self.conn.execute("UPDATE snapshots SET market = 'us-retail-commodities' WHERE market = ?", (CM,))
+        self.conn.execute("UPDATE markets SET name = 'us-retail-commodities' WHERE name = ?", (CM,))
+        self.add_market("us-retail-commodities", "commodities")
+        r = sim.backtest(self.conn, "flip", {"capital": 10_000_000_000, "min_trips": 1})
+        self.assertGreater(r["units_sold"], 0)
+
+    def test_evaluate_a_published_plan_by_id(self):
+        from goldmine_server import tasks
+        self.build_swing(2)
+        plan = {"plan": "paper1", "created": T0 + 2 * HOUR, "expires": T0 + 10 * DAY, "paper": True, "budget_min": 5,
+                "tasks": [{"id": "t1", "kind": "buy", "item": ORE, "qty": 10, "max_unit": 1_000_000, "est_min": 1}]}
+        tasks.publish(self.conn, plan, T0 + 2 * HOUR)
+        self.assertEqual(sim.evaluate_plan(self.conn, "paper1"), sim.evaluate_plan(self.conn, plan))
+        with self.assertRaises(ValueError):
+            sim.evaluate_plan(self.conn, "nope")
+
+
 if __name__ == "__main__":
     unittest.main()

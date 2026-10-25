@@ -20,6 +20,14 @@
     </form>
   </section>
   <section class="card">
+    <h2>Trader</h2>
+    <form method="post" action="/settings/trader" class="stack">
+      <label>Realms <input name="realms" value="{{ trader_realms|join(', ') }}" placeholder="Proudmoore" autocomplete="off"></label>
+      <p class="muted small">Comma-separated. The trader prices in the commodity AH and these realms' auction houses (each needs a market on the Markets page). Gold and the risk floors count the first realm's characters and the warband bank.</p>
+      <button class="primary">Save</button>
+    </form>
+  </section>
+  <section class="card">
     <h2>Storage</h2>
     <p class="muted small">Data folder: <code>{{ data_dir }}</code></p>
     {% if storage %}

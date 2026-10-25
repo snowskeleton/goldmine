@@ -57,17 +57,47 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from . import archive, pricing
+from . import archive, collector, pricing
 
 DAY, HOUR = 86400, 3600
 AH_CUT = pricing.AH_CUT
-MARKETS = ("us-commodities", "us-proudmoore")   # an item is priced in the first market that has it
+REGION = "us"
+REALMS = ("Proudmoore",)  # the trader's realms when config.toml has no [trader] realms
+MARKETS = ("us-commodities", "us-proudmoore")   # fallback names when the markets table can't say
 VALUE_DAYS = 14          # conservative value: definite sales in this window
 VALUE_HAIRCUT = 0.95
 MV_HOURS = 72            # market value window (time-weighted p10), as in pricing
 DEPOSIT_RATE_12H = 0.15  # of the vendor sell price, per 12h of duration
 DEPOSIT_FALLBACK_12H = 0.005  # of the post price per 12h, when the vendor price is unknown
 DURATIONS = (12, 24, 48)
+
+
+def trader_realms() -> list[str]:
+    """[trader] realms in config.toml (set on the Settings page); the first is where risk counts gold."""
+    realms = (collector.load_config().get("trader") or {}).get("realms") or []
+    return [str(r).strip() for r in realms if str(r).strip()] or list(REALMS)
+
+
+def trader_markets(conn, realms=None) -> list[str]:
+    """The markets the trader prices in, in priority order (an item is priced in the first one that
+    has it): the region's retail commodity AH, then each trader realm's AH. Looked up by kind and
+    realm rather than by name, since servers name them differently (us-commodities,
+    us-retail-commodities); a missing one falls back to its default name."""
+    try:
+        rows = conn.execute("SELECT name, kind, region, COALESCE(NULLIF(game, ''), 'retail'), realms FROM markets "
+                            "WHERE mid IS NOT NULL ORDER BY source IS NOT NULL, name").fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    rows = [r for r in rows if r[2] == REGION and r[3] == "retail"]
+    key = lambda name: name.replace(" ", "").replace("-", "").replace("'", "").lower()  # noqa: E731
+    out = [next((n for n, kind, *_ in rows if kind == "commodities"), MARKETS[0])]
+    for realm in realms or trader_realms():
+        name = next((n for n, kind, _, _, served in rows if kind == "realm"
+                     and key(realm) in {key(r) for r in json.loads(served or "[]")}),
+                    f"{REGION}-" + realm.strip().lower().replace("'", "").replace(" ", "-"))
+        if name not in out:
+            out.append(name)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +161,7 @@ class History:
     lookback the caller needs). `items` limits the load to those ids; otherwise items moving at
     least `min_moved_per_day` (sold + gone) over the window are loaded."""
 
-    def __init__(self, conn, markets=MARKETS, since: int | None = None, until: int | None = None,
+    def __init__(self, conn, markets=None, since: int | None = None, until: int | None = None,
                  items=None, min_moved_per_day: float = 0.0, gone_weight: float = 0.0,
                  vendor_prices: dict | None = None):
         self.conn = conn
@@ -148,7 +178,7 @@ class History:
         self._cv: dict = {}
         items = None if items is None else sorted({int(i) for i in items})
         mids = dict(conn.execute("SELECT name, mid FROM markets WHERE mid IS NOT NULL"))
-        for market in markets:
+        for market in markets or trader_markets(conn):
             if market not in mids:
                 continue
             self._load(market, mids[market], since, until, items, min_moved_per_day)
@@ -786,23 +816,28 @@ def _owned_inventory(conn, items) -> dict[int, int]:
     return {i: n for i, n in rows}
 
 
-def evaluate_plan(conn, plan: dict, start_ts: int | None = None, horizon_hours: float = 72,
+def evaluate_plan(conn, plan: dict | str, start_ts: int | None = None, horizon_hours: float = 72,
                   inventory: dict | None = None, cost_basis: dict | None = None, params: dict | None = None,
-                  markets=MARKETS) -> dict:
+                  markets=None) -> dict:
     """Score a plan (docs/trader.md task format) against what happened after start_ts (default:
     plan.created). Items the plan posts or crafts from that it didn't buy come from `inventory`
     ({item: count}; default: the user's synced bags/bank/warband counts), costed at `cost_basis`
     ({item: copper per unit}) or else their conservative value at start_ts. params: the engine
     defaults (reposts 1 here, gone_weight, deposit rates, max_hold_days), vendor_prices, markets."""
+    if isinstance(plan, str):  # a published plan, e.g. a paper plan being scored after the fact
+        row = conn.execute("SELECT body FROM plans WHERE id = ?", (plan,)).fetchone()
+        if not row:
+            raise ValueError(f"no published plan {plan!r}")
+        plan = json.loads(row[0])
     if not isinstance(plan, dict) or not isinstance(plan.get("tasks"), list):
-        raise ValueError("plan must be an object with a tasks list")
+        raise ValueError("plan must be an object with a tasks list, or a published plan's id")
     p = {**ENGINE_DEFAULTS, "reposts": 1, **(params or {})}
     extra = {"vendor_prices", "markets"}
     unknown = set(p) - set(ENGINE_DEFAULTS) - extra
     if unknown:
         raise ValueError(f"unknown params: {', '.join(sorted(unknown))}; allowed: "
                          f"{', '.join(sorted(set(ENGINE_DEFAULTS) | extra))}")
-    markets = list(p.pop("markets", None) or markets)
+    markets = list(p.pop("markets", None) or markets or trader_markets(conn))
     start = int(start_ts if start_ts is not None else plan.get("created") or 0)
     if not start:
         raise ValueError("start_ts is required when the plan has no created time")
@@ -860,12 +895,12 @@ COMMON = {
 }
 
 STRATEGIES = {
-    "flip": {**COMMON, "markets": ["us-commodities"], "days": 7, "min_trips": 2, "min_margin": 0.03,
+    "flip": {**COMMON, "markets": None, "days": 7, "min_trips": 2, "min_margin": 0.03,
              "min_moved_per_day": 2000, "min_gold_per_day": 20_000_0000, "min_presence": 0.9,
              "floor_ratio": 0.95, "ceil_ratio": 2.0, "universe_min_moved": 500},
-    "deals": {**COMMON, "markets": ["us-commodities", "us-proudmoore"], "hours": 72, "max_ratio": 0.7,
+    "deals": {**COMMON, "markets": None, "hours": 72, "max_ratio": 0.7,
               "min_sold": 1.0, "floor_ratio": 0.9, "ceil_ratio": 1.5},
-    "craft": {**COMMON, "markets": ["us-commodities", "us-proudmoore"], "hours": 72, "min_roi": 0.10,
+    "craft": {**COMMON, "markets": None, "hours": 72, "min_roi": 0.10,
               "min_sold": 1.0, "buy_slack": 1.05, "sell_days": 1.0, "floor_ratio": 0.0, "ceil_ratio": 1.5},
 }
 
@@ -1103,6 +1138,8 @@ def backtest(conn, strategy: str, params: dict | None = None, since: int | None 
         raise ValueError(f"unknown params for {strategy}: {', '.join(sorted(unknown))}; "
                          f"allowed: {', '.join(sorted(defaults))}")
     p = {**defaults, **(params or {})}
+    if not p["markets"]:  # the trader's markets; flips are commodity round trips only
+        p["markets"] = trader_markets(conn)[:1 if strategy == "flip" else None]
     markets = list(p["markets"])
     latest = _latest_snapshot(conn, markets)
     if latest is None:

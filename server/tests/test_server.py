@@ -310,6 +310,11 @@ class ServerFlow(unittest.TestCase):
         self.assertEqual(cfg["api"]["client_secret"], "s3cret")  # blank keeps the old secret
         self.assertFalse(cfg["app"]["auto_collect"])
         self.assertEqual(oct(settings.CONFIG.stat().st_mode & 0o777), "0o600")
+        self.admin.post("/settings/trader", data={"realms": "Proudmoore, Moon Guard,, Proudmoore"})
+        self.assertEqual(market.load_config(settings.CONFIG)["trader"]["realms"], ["Proudmoore", "Moon Guard"])
+        self.assertIn('value="Proudmoore, Moon Guard"', self.admin.get("/settings").text)
+        self.admin.post("/settings/trader", data={"realms": " "})
+        self.assertNotIn("trader", market.load_config(settings.CONFIG))  # blank: back to the default
         self.admin.post("/markets/add", data={"name": "us-commodities", "kind": "commodities", "region": "us",
                                               "namespace": "dynamic-us"})
         self.admin.post("/markets/add", data={"name": "us-pagle", "kind": "realm", "region": "us",

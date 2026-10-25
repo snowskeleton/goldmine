@@ -68,7 +68,8 @@ LOCAL_TOOLS = [
                     "addon copy (plan id, generated); which plan the addon last loaded and when (its "
                     "acknowledgement, written at login or /reload and uploaded with SavedVariables); and "
                     "SavedVariables WoW wrote that haven't been uploaded yet. state is one of unknown, no_plan, "
-                    "not_delivered, delivered (on disk, not yet loaded) or loaded, with next_step for the player.",
+                    "not_delivered, delivered (on disk, not yet loaded), loaded, or paper_only (the newest plan "
+                    "stays on the server), with next_step for the player.",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
      "annotations": {"readOnlyHint": True, "openWorldHint": False}},
     {"name": "client_status", "title": "Client status",
@@ -180,10 +181,13 @@ class Bridge:
             server = self.rpc("tools/call", {"name": "get_plan", "arguments": {}}).get("structuredContent") or {}
         except Exception as exc:  # noqa: BLE001
             server = {"error": str(exc)}
-        active = (server.get("plan") or {}).get("plan") if isinstance(server.get("plan"), dict) else None
+        newest = server.get("plan") if isinstance(server.get("plan"), dict) else {}
+        active = server.get("in_game_plan", newest.get("plan"))  # older servers: the newest plan is the addon's
         last = server.get("addon_last_loaded")
         if "error" in server:
             state, step = "unknown", "the server couldn't be asked for its plan; see server_error"
+        elif not active and newest.get("in_game") is False:
+            state, step = "paper_only", "the newest plan is paper only; nothing goes to the game, score it with evaluate_plan"
         elif not active:
             state, step = "no_plan", "nothing to do; publish a plan"
         elif not on_disk or any(d.get("plan") != active for d in on_disk):

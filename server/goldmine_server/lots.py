@@ -70,7 +70,7 @@ def _unit_price_at(conn, item: int, ts: int) -> int | None:
     """The item's lowest listing in the last snapshot at or before ts (any configured market)."""
     best = None  # (last_modified, min_price)
     try:
-        for name, mid in store.market_ids(conn, list(sim.MARKETS)).items():
+        for name, mid in store.market_ids(conn, sim.trader_markets(conn)).items():
             at = conn.execute("SELECT MAX(id) FROM snapshots WHERE market = ? AND last_modified <= ?",
                               (name, ts)).fetchone()[0]
             row = archive.last_state(conn, mid, item, 0, at, priced=True) if at is not None else None
@@ -228,13 +228,13 @@ def build(conn, realm: str | None = None, tags: dict | None = None, max_hold_day
 
 
 def _valuer(conn, items, at):
-    hist = sim.History(conn, sim.MARKETS, at - sim.VALUE_DAYS * DAY - sim.MV_HOURS * sim.HOUR, at, items=items)
+    hist = sim.History(conn, sim.trader_markets(conn), at - sim.VALUE_DAYS * DAY - sim.MV_HOURS * sim.HOUR, at, items=items)
     return hist
 
 
 def _now(conn) -> int:
     try:
-        latest = sim._latest_snapshot(conn, sim.MARKETS)
+        latest = sim._latest_snapshot(conn, sim.trader_markets(conn))
     except Exception:  # noqa: BLE001
         latest = None
     return min(int(time.time()), latest) if latest else int(time.time())

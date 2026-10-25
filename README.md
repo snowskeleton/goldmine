@@ -451,6 +451,10 @@ hand. The flow:
    `buy post cancel craft scan mail vendor`, required fields, prices as copper ints, `expires` in
    the future, total `est_min` ≤ `budget_min`) and stores it as the active plan. Older plans are
    kept for history. Real (non-paper) plans must then pass the risk rules in `risk.py` (token floors, exposure caps, buy exits, experiment budget); `get_risk_status` shows where the account stands.
+   Paper plans (`paper: true`) skip the risk rules and never reach the game unless they also say
+   `in_game: true`: they're scored after the fact with `evaluate_plan`, and they replace only
+   other paper-only plans, so a real plan stays in the addon while the trader paper trades.
+   `get_plan` returns the newest plan and names the one the addon gets (`in_game_plan`).
 2. `goldmine.py push` (the app does this after every sync) writes `Tasks.lua` next to `Data.lua`
    in every installed copy of the addon (`GET /api/v1/addon-tasks`; when no plan is active it writes an empty plan). `/reload` loads it.
 3. In game, `/goldmine tasks` (or opening the AH, mailbox, a merchant or a profession) shows the
@@ -473,6 +477,13 @@ hand. The flow:
    gold paid) goes to `GoldmineDB.taskResults`. The next sync uploads it and the server imports it by id.
    The trader reads it with `get_task_results` and `get_plan`, the same plan with each task's result.
 
+**Trader realms.** Settings → Trader lists the realms the trader works on (default
+Proudmoore; `[trader] realms = [...]` in `config.toml`). The trader prices in the region's retail
+commodity AH plus those realms' auction houses, found by kind and realm on the Markets page
+(so `us-retail-commodities` and `us-commodities` both work); each realm needs a market there,
+its own or from an all-realms entry. The risk floors count the first realm's characters and the
+warband bank.
+
 ### Trader learning tools (MCP)
 
 For the trader in [docs/trader.md](docs/trader.md): test strategies on history and paper plans
@@ -481,7 +492,7 @@ before real gold is used, and keep score afterwards. All read-only except `journ
 | Tool | |
 |---|---|
 | `backtest` | replay `flip`, `deals` or `craft` over stored history (default: last 30 days): at each decision time (13h and 1h UTC) build the plan the strategy would have published from data up to then, fill it, step on. Realized P&L, ROI, capital used, max drawdown, sell-through, days held, unsold inventory at conservative value, a sample plan, and a `backtest_id` to cite as `bt:<id>` |
-| `evaluate_plan` | score a plan in the Tasks.lua format against what happened after `start_ts`: per-task fills, sales, expiries and fees |
+| `evaluate_plan` | score a plan in the Tasks.lua format, or a published plan by id, against what happened after `start_ts`: per-task fills, sales, expiries and fees |
 | `get_lots` | FIFO lots from the AH ledger and your crafts: open lots at cost and conservative value, days held, realized P&L per item, deposit/cancel fees, the last 50 crafts with what each reagent cost (`crafts`, `craft_totals`) |
 | `get_scorecard` | per strategy tag: realized P&L, ROI, sell-through (sold or used in crafts), days held, open exposure; weekly AH cash flow; prediction error of journal hypotheses |
 | `journal_write` / `journal_read` | hypotheses, decisions, lessons and notes with strategy, items, a prediction, evidence refs (`task:`, `plan:`, `tx:`, `bt:`, `journal:`), expiry and supersession |

@@ -133,6 +133,24 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(tasks.get_plan(self.conn, now=NOW + 200)["plan"])
         self.assertIn("tasks = {},", tasks.addon_tasks(self.conn, NOW + 200))
 
+    def test_paper_only_plans_stay_out_of_the_game(self):
+        tasks.publish(self.conn, sample_plan(), NOW)
+        out = tasks.publish(self.conn, sample_plan(plan="paper1", paper=True), NOW + 10)
+        self.assertFalse(out["in_game"])
+        # The real plan is still the addon's; the paper plan is the newest for the trader to score.
+        self.assertEqual(tasks.active_plan(self.conn, NOW + 20)["plan"], "p2026-10-20a")
+        self.assertIn('plan = "p2026-10-20a"', tasks.addon_tasks(self.conn, NOW + 20))
+        got = tasks.get_plan(self.conn, now=NOW + 20)
+        self.assertEqual((got["plan"]["plan"], got["in_game_plan"]), ("paper1", "p2026-10-20a"))
+        self.assertIsNone(tasks.get_plan(self.conn, "p2026-10-20a", NOW + 20)["superseded_by"])
+        tasks.publish(self.conn, sample_plan(plan="paper2", paper=True), NOW + 30)
+        self.assertEqual(tasks.get_plan(self.conn, "paper1", NOW + 40)["superseded_by"], "paper2")
+        # A paper plan published with in_game goes to the addon, replacing the real one.
+        tasks.publish(self.conn, sample_plan(plan="paper3", paper=True, in_game=True), NOW + 50)
+        self.assertEqual(tasks.active_plan(self.conn, NOW + 60)["plan"], "paper3")
+        self.assertIsNone(tasks.get_plan(self.conn, "paper2", NOW + 60)["superseded_by"])
+        self.assertIn("in_game must be true or false", tasks.validate(sample_plan(in_game=1), NOW))
+
     def test_rejected_plan_is_not_stored(self):
         with self.assertRaises(tasks.PlanRejected) as cm:
             tasks.publish(self.conn, sample_plan(budget_min=5), NOW)
@@ -149,7 +167,8 @@ class StoreTests(unittest.TestCase):
         plan = tasks.normalize(sample_plan(), NOW)
         parsed = svparse.parse(tasks.render_lua(plan, NOW))["GoldmineTasks"]
         self.assertEqual(parsed["generated"], NOW)
-        self.assertEqual({k: parsed[k] for k in plan if k != "tasks"}, {k: v for k, v in plan.items() if k != "tasks"})
+        self.assertEqual({k: parsed[k] for k in plan if k not in ("tasks", "in_game")},
+                         {k: v for k, v in plan.items() if k not in ("tasks", "in_game")})
         self.assertEqual(parsed["tasks"], plan["tasks"])
         empty = svparse.parse(tasks.render_lua(None, NOW))["GoldmineTasks"]
         self.assertEqual(empty, {"generated": NOW, "tasks": {}})  # an empty Lua table parses as {}
