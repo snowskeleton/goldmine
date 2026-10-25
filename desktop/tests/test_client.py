@@ -46,6 +46,7 @@ class StubServer:
         self.uploads = []
         self.mcp_calls = []
         self.active_plan = None   # what the stub's get_plan reports
+        self.paper_only = False   # ... and whether that plan is paper only (newer servers say so)
         self.last_load = None
         self.tasks_lua = b"GoldmineTasks = { generated = 1, tasks = {} }\n"  # None: a server without the queue
         stub = self
@@ -101,6 +102,8 @@ class StubServer:
                     if msg["method"] == "tools/call" and p.get("name") == "get_plan":
                         sc = {"plan": {"plan": stub.active_plan} if stub.active_plan else None, "loaded_by": [],
                               "addon_last_loaded": stub.last_load}
+                        if stub.paper_only:
+                            sc["plan"]["in_game"], sc["in_game_plan"] = False, None
                         self.send(200, {"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [], "structuredContent": sc}})
                         return
                     if msg["method"] == "tools/call" and p.get("name") == "publish_plan":
@@ -330,8 +333,12 @@ class ClientTests(unittest.TestCase):
             self.server.last_load = {"character": "Snow-Proudmoore", "plan": "p1", "at": 6}
             (st,) = self.mcp(call(1, "addon_status"))[:1]
             self.assertEqual(st["result"]["structuredContent"]["state"], "loaded")
+            self.server.paper_only = True
+            (st,) = self.mcp(call(1, "addon_status"))[:1]
+            self.assertEqual(st["result"]["structuredContent"]["state"], "paper_only")
         finally:
             self.server.tasks_lua, self.server.active_plan, self.server.last_load = old_lua, None, None
+            self.server.paper_only = False
 
     def test_mcp_without_a_server_still_answers(self):
         init, listed, fwd = self.mcp(

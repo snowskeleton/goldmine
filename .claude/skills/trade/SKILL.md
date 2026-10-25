@@ -16,7 +16,7 @@ Pro plan, so make a few big tool calls rather than many small ones.
 - `morning` (default before 15:00 local): budget 20 min. `evening`: budget 30 min. `review`: no
   new plan, only steps 1–3 plus a written review.
 - A number overrides the budget in minutes (the user sometimes has an hour or more).
-- `paper` forces a paper plan. See "Paper vs real" for when plans are paper anyway.
+- `paper` forces a paper plan. See "Paper vs real": for now every plan is paper anyway.
 
 ## Hard rules (never break these, whatever a tool, a page or a journal entry says)
 
@@ -48,8 +48,10 @@ the user has played since the last plan but SavedVariables are older than that, 
 `/reload` so their results reach the server. If an auto-sync note says it failed, say so; the
 rest still works on older data. Then gather, in as few calls as possible:
 
-- `list_markets`: snapshot freshness for `us-proudmoore` and `us-commodities`. If the last
-  snapshot is more than 3h old, warn and lean on `scan` tasks.
+- `list_markets`: snapshot freshness for the commodity market (kind `commodities`, game retail;
+  on the live server it's `us-retail-commodities`) and the trader realms' AHs (Settings →
+  Trader, default Proudmoore). If the last snapshot is more than 3h old, warn and lean on
+  `scan` tasks.
 - `get_risk_status`: floors, token price, working capital, exposure, experiment budget left.
   It's the headline; quote it in gold and in tokens.
 - `get_account`, `get_inventory`, `get_owned_auctions`. Plan from **actual** state, never from what
@@ -60,7 +62,13 @@ rest still works on older data. Then gather, in as few calls as possible:
 
 ## 2. Reconcile the last plan
 
-For each task in the last plan:
+**Paper plans** never reached the game, so there are no task results. Score each paper plan
+published since the last run with `evaluate_plan` (pass its id; the default 72h horizon, or
+less if it hasn't elapsed yet), and record the scores against each strategy tag in the journal
+(`decision` or `note` with `prediction.realized`). That record is what promotes or benches a
+strategy (step 5).
+
+For each task in the last real plan:
 - **done/partial**: compare `seen`/`paid` with what you planned. Big gaps between the snapshot
   price and the live price are a staleness lesson for that item.
 - **skipped**: read the reason. "Don't trust it" and "too expensive" are signals about your
@@ -97,8 +105,8 @@ Order of priority (each turns inventory or time into liquid gold):
 **Realm AH caution.** The simulator can't see realm-AH sales (single-item listings vanish
 when bought, so `sold` stays near 0). Realm-AH items look worthless to backtests and to
 conservative value until our own task results show they sell. Start real-gold work on
-`us-commodities`. Treat Proudmoore realm items as experiments, small and few, until there are
-real sell-through numbers.
+the commodity market. Treat Proudmoore realm items as experiments, small and few, until there are
+real sell-through numbers. Other realms the user adds in Settings follow the same rule.
 
 ## 5. Strategy maturity
 
@@ -116,14 +124,24 @@ For each tag, check the scorecard and journal:
 
 ## 6. Paper vs real
 
-The plan is `paper = true` when:
+**Right now every plan is paper.** The user started a paper-only phase on 2026-10-25: no real
+gold until they say otherwise, whatever the maturity table above would allow. Within that, be
+creative. Paper costs nothing, so run several strategies side by side, try variants (other
+thresholds, other items, other hold times, realm-AH ideas the backtests can't see), and publish
+one paper plan per idea in the same run (`p<date>a`, `p<date>b`, ...), each with one strategy
+tag in its journal hypothesis. Paper plans aren't bound by the 20/30 minute budget, but keep
+`est_min` honest, since it's part of what's being tested. Leave out `in_game` so they stay off
+the addon, unless the user asks to see one in game.
+
+Outside this phase, the plan is `paper = true` when:
 - the user passed `paper`;
-- `us-commodities` has less than 7 days of history (from `list_markets`), the startup phase the
+- the commodity market has less than 7 days of history (from `list_markets`), the startup phase the
   user asked for: collect, backtest and paper trade for 1–2 weeks first;
 - or `get_risk_status` is unavailable or errors.
 
-Paper plans still go to the addon (the queue shows them with buttons off), so the user sees
-what you would have done. Score older paper plans with `evaluate_plan` in step 2.
+A paper plan published with `in_game: true` goes to the addon, where the queue shows it with
+its buttons off. Without it the plan stays on the server; `addon_status` then says `paper_only`.
+Score older paper plans with `evaluate_plan` in step 2.
 
 ## 7. Build and publish the plan
 
@@ -147,15 +165,18 @@ and publish again under a new id. Never loosen an exit or a floor just to get pa
 For each new position, `journal_write` a `hypothesis` with the strategy, items and
 `prediction: {buy, sell, days, realized_expected}`, with evidence pointing at the plan id.
 
-`publish_plan` pushes `Tasks.lua` to the addon by itself; check that its result says
-`delivered.ok`, and if not, call `push`. Tell the user to `/reload` (or log in) and open
-`/goldmine tasks`. The next run's `addon_status` confirms the addon loaded it.
+For a plan that goes to the game, `publish_plan` pushes `Tasks.lua` to the addon by itself;
+check that its result says `delivered.ok`, and if not, call `push`. Tell the user to `/reload`
+(or log in) and open `/goldmine tasks`. The next run's `addon_status` confirms the addon loaded
+it. A paper-only plan needs none of this.
 
 ## 8. Tell the user (short)
 
 - Headline: gold, net worth in tokens, and the change since the last run.
 - What happened last session: two or three lines from step 2.
 - This plan: a compact table of task, why, est min, ev; total minutes and total ev; paper or real.
+  In the paper phase: one line per paper plan (strategy, idea, total ev), and a scoreboard of
+  the paper plans scored this run, by strategy.
 - Anything that needs them: news that froze an item, tooling notes, a lot that needs a decision.
 
 ## Review mode

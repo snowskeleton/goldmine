@@ -31,13 +31,13 @@ INSTRUCTIONS = (
     "World of Warcraft auction house data collected by this Goldmine server from Blizzard's API, "
     "about hourly per market. All prices are copper per unit (1 gold = 10000 copper). Times are unix "
     "seconds with *_iso UTC copies. Call list_markets first for market names (e.g. us-proudmoore for a "
-    "realm AH, us-commodities for region-wide commodities). Items are ids or names; search_items finds ids. "
+    "realm AH, the kind=commodities market for region-wide commodities). Items are ids or names; search_items finds ids. "
     "sold = units definitely bought from listings still up; gone = units in listings that vanished before "
     "they could expire (sold or cancelled, so an upper bound on sales). get_account, get_inventory, "
     "get_owned_auctions, get_ledger, get_recipes and get_craft_results read your own account as the addon last "
     "saw it (check the *_seen / as_of times); get_token_price gives the WoW token price in copper.")
 
-_market = {"type": "string", "description": "Market name from list_markets, e.g. us-proudmoore or us-commodities"}
+_market = {"type": "string", "description": "Market name from list_markets, e.g. us-proudmoore or the commodities one"}
 _items = {"type": "array", "items": {"type": ["integer", "string"]}, "maxItems": md.MAX_ITEMS,
           "description": "Item ids, or item names (best match)"}
 _hours = {"type": "integer", "minimum": 1, "maximum": 720, "default": 72,
@@ -71,11 +71,12 @@ LEARNING_TOOLS = [
            "until": {"type": "integer", "description": "Unix seconds (default: latest snapshot)"}},
           ["strategy"], lambda conn, strategy, **kw: sim.backtest(conn, strategy, **kw), user_db=True),
     _tool("evaluate_plan", "Score a plan",
-          "Score a plan in the Tasks.lua format (an object with tasks: buy/post/craft/cancel...) against what "
+          "Score a plan in the Tasks.lua format (an object with tasks: buy/post/craft/cancel..., or a published "
+          "plan's id) against what "
           "actually happened after start_ts (default plan.created): what each task would have filled, sold, expired "
           "and earned after fees, with the same fill model as backtest. Items posted or crafted from that the plan "
           "didn't buy come from `inventory` (default: your synced counts) at cost_basis or conservative value.",
-          {"plan": {"type": "object"}, "start_ts": {"type": "integer"},
+          {"plan": {"type": ["object", "string"]}, "start_ts": {"type": "integer"},
            "horizon_hours": {"type": "number", "minimum": 1, "maximum": 720, "default": 72},
            "inventory": {"type": "object", "description": "{item id: count} held at start"},
            "cost_basis": {"type": "object", "description": "{item id: copper per unit} for held inventory"},
@@ -131,21 +132,22 @@ TASK_TOOLS = [
     _tool("publish_plan", "Publish plan",
           "Validate and store a plan of in-game tasks, making it the active plan the addon's queue shows "
           "after the next push and /reload (older plans stay for history). Format: docs/trader.md \"Plans and "
-          "tasks\": {plan: id, expires: unix s (future), budget_min, paper?: bool, created?, tasks: [{id, kind, "
+          "tasks\": {plan: id, expires: unix s (future), budget_min, paper?: bool, in_game?: bool, created?, tasks: [{id, kind, "
           "est_min, why?, ev? (copper), after? (earlier id), ...}]}. Kinds and required fields: buy item qty "
           "max_unit; post item qty floor ceil [undercut=1 duration=24]; cancel item below|above; craft recipe "
           "qty; scan item; mail item qty to; vendor item [qty]. Prices are copper per unit (ints). Total est_min "
-          "must fit budget_min. Returns the stored plan id, or the reasons it was rejected.",
+          "must fit budget_min. Paper plans skip the risk checks and stay off the addon unless in_game is true; "
+          "they replace only other paper-only plans. Returns the stored plan id, or the reasons it was rejected.",
           {"plan": {"type": "object", "required": ["plan", "expires", "budget_min", "tasks"], "properties": {
               "plan": {"type": "string"}, "created": {"type": "integer"}, "expires": {"type": "integer"},
-              "paper": {"type": "boolean"}, "budget_min": {"type": "number", "exclusiveMinimum": 0},
+              "paper": {"type": "boolean"}, "in_game": {"type": "boolean"}, "budget_min": {"type": "number", "exclusiveMinimum": 0},
               "tasks": {"type": "array", "items": _task, "minItems": 1, "maxItems": tasks.MAX_TASKS}}}},
           ["plan"], lambda conn, plan: tasks.publish(conn, plan), user_db=True, read_only=False),
     _tool("get_plan", "Get plan",
           "The active plan (or the one with this id), each task with its latest result from the addon "
           "(status done/partial/skipped/blocked/below_floor/expired, qty, seen = live unit price, paid, reason). "
           "loaded_by: characters whose addon loaded this plan (at login or /reload), from their last upload; "
-          "addon_last_loaded: the plan the addon loaded most recently.",
+          "in_game_plan: the plan Tasks.lua carries; addon_last_loaded: the plan the addon loaded most recently.",
           {"plan": _plan_id}, [], lambda conn, plan=None: tasks.get_plan(conn, plan), user_db=True),
     _tool("get_task_results", "Task results",
           "What happened to tasks in game, newest first: status, qty, seen (live unit price the human saw, "
@@ -308,7 +310,7 @@ TOOLS = [
           "conservative inventory value) in copper and in WoW tokens, the raw (1 token) and net (2 token) floors and "
           "headroom, working capital, per-item and total inventory caps, trader inventory at cost, trader realized "
           "P&L and experiment budget left, and whether real buys are allowed. publish_plan enforces the same rules.",
-          {"realm": {"type": "string", "default": risk.REALM, "description": "Realm whose characters count"}},
+          {"realm": {"type": "string", "description": "Realm whose characters count (default: the first trader realm)"}},
           [], lambda conn, **kw: risk.status(conn, **kw), user_db=True),
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}

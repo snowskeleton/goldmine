@@ -13,7 +13,7 @@ Paper plans risk no gold and always pass. A real plan's buys are costed at their
 and every buy needs an exit: `sell` (target unit price) and `hold_days`. Working capital is
 raw gold minus the raw floor. "Trader lots" are FIFO lots (lots.py) bought on or after the first
 real plan, so inventory the user already had doesn't count against the trader's caps (it still
-counts toward net worth). Gold and inventory are the Proudmoore characters' plus the warband
+counts toward net worth). Gold and inventory are the first trader realm's characters' plus the warband
 bank's; values come from sim.conservative_value. Everything is copper.
 """
 
@@ -24,7 +24,6 @@ import statistics
 
 from . import account, lots, sim
 
-REALM = "Proudmoore"
 REGION = "us"
 RAW_FLOOR_TOKENS = 1
 NET_FLOOR_TOKENS = 2
@@ -112,8 +111,9 @@ class _State:
         return 0 if self.raw_floor is None else max(0, self.gold - self.raw_floor)
 
 
-def status(conn, realm: str = REALM) -> dict:
+def status(conn, realm: str | None = None) -> dict:
     """Where the account stands against the risk rules (the trader's headline numbers)."""
+    realm = realm or sim.trader_realms()[0]
     s = _State(conn, realm)
     tok = s.token
     in_tokens = (lambda c: None if not tok else round(c / tok, 3))  # noqa: E731
@@ -142,10 +142,11 @@ def status(conn, realm: str = REALM) -> dict:
     }
 
 
-def validate(conn, plan: dict, realm: str = REALM) -> list[str]:
+def validate(conn, plan: dict, realm: str | None = None) -> list[str]:
     """Risk errors for a (shape-valid) plan; empty when it may be published."""
     if plan.get("paper"):
         return []
+    realm = realm or sim.trader_realms()[0]
     buys = [t for t in plan["tasks"] if t["kind"] == "buy"]
     if not buys:
         return []

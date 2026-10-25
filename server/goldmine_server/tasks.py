@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS plan_loads (  -- the addon's acknowledgement: the pla
 """
 
 STATUSES = ("done", "partial", "skipped", "blocked", "below_floor", "expired")
-PLAN_KEYS = {"plan", "created", "expires", "paper", "budget_min", "tasks"}
+PLAN_KEYS = {"plan", "created", "expires", "paper", "in_game", "budget_min", "tasks"}
+# Plans the addon gets: real ones, and paper ones published with in_game. Other paper plans are
+# only scored (evaluate_plan), so they neither replace nor are replaced by what's in the game.
+IN_GAME = "(paper = 0 OR json_extract(body, '$.in_game') = 1)"
 MAX_TASKS = 200
 MAX_TEXT = 200
 DURATIONS = (12, 24, 48)  # hours, as the AH offers them
@@ -150,8 +153,9 @@ def validate(plan, now: int | None = None) -> list[str]:
         errors.append("expires is in the past")
     if "created" in plan and not _is_int(plan["created"]):
         errors.append("created must be unix seconds")
-    if "paper" in plan and not isinstance(plan["paper"], bool):
-        errors.append("paper must be true or false")
+    for k in ("paper", "in_game"):
+        if k in plan and not isinstance(plan[k], bool):
+            errors.append(f"{k} must be true or false")
     budget = plan.get("budget_min")
     if not _is_num(budget) or budget <= 0:
         errors.append("budget_min must be a positive number (minutes)")
@@ -182,6 +186,7 @@ def normalize(plan: dict, now: int | None = None) -> dict:
     out = {"plan": plan["plan"], "created": plan.get("created") or now or int(time.time()),
            "expires": plan["expires"], "paper": bool(plan.get("paper", False)), "budget_min": plan["budget_min"],
            "tasks": []}
+    out["in_game"] = not out["paper"] or bool(plan.get("in_game", False))
     for t in plan["tasks"]:
         t = dict(t)
         if t["kind"] == "post":
@@ -210,20 +215,22 @@ def publish(conn, plan: dict, now: int | None = None) -> dict:
     if errors:
         raise PlanRejected(errors)
     p = normalize(plan, now)
-    conn.execute("UPDATE plans SET superseded_by = ? WHERE superseded_by IS NULL", (p["plan"],))
+    lane = IN_GAME if p["in_game"] else f"NOT {IN_GAME}"
+    conn.execute(f"UPDATE plans SET superseded_by = ? WHERE superseded_by IS NULL AND {lane}", (p["plan"],))
     conn.execute("INSERT INTO plans (id, created, expires, paper, budget_min, published, body) "
                  "VALUES (?, ?, ?, ?, ?, ?, ?)",
                  (p["plan"], p["created"], p["expires"], int(p["paper"]), p["budget_min"], now, json.dumps(p)))
     conn.commit()
     return {"plan": p["plan"], "active": True, "tasks": len(p["tasks"]),
             "est_min": sum(t["est_min"] for t in p["tasks"]), "budget_min": p["budget_min"],
-            "expires": p["expires"], "paper": p["paper"]}
+            "expires": p["expires"], "paper": p["paper"], "in_game": p["in_game"]}
 
 
 def active_plan(conn, now: int | None = None) -> dict | None:
-    """The newest plan, unless it has expired (an expired plan is never replaced by an older one)."""
+    """The newest plan for the addon, unless it has expired (an expired plan is never replaced by an
+    older one)."""
     now = now or int(time.time())
-    row = conn.execute("SELECT body FROM plans WHERE superseded_by IS NULL AND expires > ? "
+    row = conn.execute(f"SELECT body FROM plans WHERE superseded_by IS NULL AND expires > ? AND {IN_GAME} "
                        "ORDER BY published DESC LIMIT 1", (now,)).fetchone()
     return json.loads(row[0]) if row else None
 
@@ -243,8 +250,9 @@ def get_plan(conn, plan: str | None = None, now: int | None = None) -> dict:
                            "AND expires > ? ORDER BY published DESC LIMIT 1", (now,)).fetchone()
     if not row:
         return {"plan": None, "note": f"no plan {plan!r}" if plan else "no active plan",
-                "addon_last_loaded": last_load(conn)}
+                "in_game_plan": _in_game_id(conn, now), "addon_last_loaded": last_load(conn)}
     body = json.loads(row[0])
+    body.setdefault("in_game", not body["paper"])
     results = {r["task"]: r for r in map(_result_row, conn.execute(
         "SELECT id, plan, task, char_key, ts, status, qty, seen, paid, reason, imported FROM task_results "
         "WHERE plan = ?", (body["plan"],)))}
@@ -254,7 +262,13 @@ def get_plan(conn, plan: str | None = None, now: int | None = None) -> dict:
         "SELECT char_key, ts FROM plan_loads WHERE plan = ? ORDER BY ts DESC", (body["plan"],))]
     return {"plan": body, "published": row[1], "superseded_by": row[2],
             "active": row[2] is None and body["expires"] > now, "expired": body["expires"] <= now,
-            "loaded_by": loads, "addon_last_loaded": last_load(conn)}
+            "loaded_by": loads, "in_game_plan": _in_game_id(conn, now), "addon_last_loaded": last_load(conn)}
+
+
+def _in_game_id(conn, now: int) -> str | None:
+    """The plan Tasks.lua carries (it can differ from the newest plan when that one is paper only)."""
+    p = active_plan(conn, now)
+    return p and p["plan"]
 
 
 def last_load(conn) -> dict | None:
