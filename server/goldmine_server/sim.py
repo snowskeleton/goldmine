@@ -875,6 +875,57 @@ def evaluate_plan(conn, plan: dict | str, start_ts: int | None = None, horizon_h
     return out
 
 
+def paper_scorecard(conn, since: int | None = None, until: int | None = None, strategy: str | None = None,
+                    horizon_hours: float = 72, limit: int = 50) -> dict:
+    """Every paper plan published in [since, until] (by created; default the last 30 days) scored
+    with evaluate_plan, then totalled per strategy tag (the plan's `strategy`, else "untagged").
+    Plans whose horizon hasn't passed yet are scored on the data so far and counted as incomplete.
+    predicted_ev is the sum of the plan's task `ev`s, to set against marked_pnl."""
+    until = int(until) if until is not None else int(time.time())
+    since = int(since) if since is not None else until - 30 * DAY
+    limit = max(1, min(int(limit), 200))
+    rows = conn.execute("SELECT id, body FROM plans WHERE paper = 1 AND created >= ? AND created <= ? "
+                        "ORDER BY created DESC, id", (since, until)).fetchall()
+    plans, totals = [], {}
+    for pid, body in rows:
+        plan = json.loads(body)
+        tag = plan.get("strategy") or "untagged"
+        if strategy and tag != strategy:
+            continue
+        if len(plans) >= limit:
+            break
+        ev = sum(t.get("ev") or 0 for t in plan["tasks"])
+        row = {"plan": pid, "strategy": tag, "created": plan["created"], "created_iso": iso(plan["created"]),
+               "tasks": len(plan["tasks"]), "predicted_ev": ev}
+        try:
+            r = evaluate_plan(conn, plan, horizon_hours=horizon_hours)
+        except ValueError as exc:
+            plans.append({**row, "error": str(exc)})
+            continue
+        keys = ("complete", "realized_pnl", "marked_pnl", "capital_used", "roi", "units_acquired", "units_sold",
+                "sell_through", "unsold_conservative_value")
+        row.update({k: r[k] for k in keys})
+        plans.append(row)
+        t = totals.setdefault(tag, {"strategy": tag, "plans": 0, "complete": 0, "profitable": 0, "realized_pnl": 0,
+                                    "marked_pnl": 0, "capital_used": 0, "units_acquired": 0, "units_sold": 0,
+                                    "predicted_ev": 0})
+        t["plans"] += 1
+        t["complete"] += bool(r["complete"])
+        t["profitable"] += r["marked_pnl"] > 0
+        for k in ("realized_pnl", "marked_pnl", "capital_used", "units_acquired", "units_sold"):
+            t[k] += r[k]
+        t["predicted_ev"] += ev
+    for t in totals.values():
+        t["roi"] = round(t["realized_pnl"] / t["capital_used"], 4) if t["capital_used"] else None
+        t["sell_through"] = round(t["units_sold"] / t["units_acquired"], 4) if t["units_acquired"] else None
+        t["prediction_error"] = t["marked_pnl"] - t["predicted_ev"]
+    return {"since": since, "since_iso": iso(since), "until": until, "until_iso": iso(until),
+            "horizon_hours": horizon_hours,
+            "strategies": sorted(totals.values(), key=lambda t: -t["marked_pnl"]), "plans": plans,
+            "note": "Scores use evaluate_plan's fill model; marked_pnl counts unsold inventory at conservative "
+                    "value. A strategy needs complete plans across several days before it means much."}
+
+
 # ---------------------------------------------------------------------------
 # Backtests
 # ---------------------------------------------------------------------------

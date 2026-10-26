@@ -82,6 +82,17 @@ LEARNING_TOOLS = [
            "cost_basis": {"type": "object", "description": "{item id: copper per unit} for held inventory"},
            "params": _params},
           ["plan"], lambda conn, plan, **kw: sim.evaluate_plan(conn, plan, **kw), user_db=True),
+    _tool("get_paper_scorecard", "Paper scorecard",
+          "Every paper plan published in a window (default the last 30 days, by created) scored with "
+          "evaluate_plan, then totalled per strategy tag (the plan's strategy field, else untagged): plans, how "
+          "many have run their full horizon (complete), how many made money, realized and marked P&L, capital "
+          "used, ROI, sell-through, and predicted_ev (sum of task ev) against marked_pnl. Per-plan rows too.",
+          {"since": {"type": "integer", "description": "Unix seconds (default: until - 30 days)"},
+           "until": {"type": "integer", "description": "Unix seconds (default: now)"},
+           "strategy": {"type": "string", "description": "Only plans with this strategy tag"},
+           "horizon_hours": {"type": "number", "minimum": 1, "maximum": 720, "default": 72},
+           "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}},
+          [], lambda conn, **kw: sim.paper_scorecard(conn, **kw), user_db=True),
     _tool("get_lots", "Cost-basis lots",
           "FIFO lots from your AH ledger: open lots at cost and at conservative value (min(market value, p25 of "
           "definite sales over 14d) x 0.95 - a deposit; 0 with no sales; halved past max hold), days held, realized "
@@ -132,7 +143,8 @@ TASK_TOOLS = [
     _tool("publish_plan", "Publish plan",
           "Validate and store a plan of in-game tasks, making it the active plan the addon's queue shows "
           "after the next push and /reload (older plans stay for history). Format: docs/trader.md \"Plans and "
-          "tasks\": {plan: id, expires: unix s (future), budget_min, paper?: bool, in_game?: bool, created?, tasks: [{id, kind, "
+          "tasks\": {plan: id, expires: unix s (future), budget_min, paper?: bool, in_game?: bool, strategy?: tag, "
+          "created?, tasks: [{id, kind, "
           "est_min, why?, ev? (copper), after? (earlier id), ...}]}. Kinds and required fields: buy item qty "
           "max_unit; post item qty floor ceil [undercut=1 duration=24]; cancel item below|above; craft recipe "
           "qty; scan item; mail item qty to; vendor item [qty]. Prices are copper per unit (ints). Total est_min "
@@ -140,7 +152,9 @@ TASK_TOOLS = [
           "they replace only other paper-only plans. Returns the stored plan id, or the reasons it was rejected.",
           {"plan": {"type": "object", "required": ["plan", "expires", "budget_min", "tasks"], "properties": {
               "plan": {"type": "string"}, "created": {"type": "integer"}, "expires": {"type": "integer"},
-              "paper": {"type": "boolean"}, "in_game": {"type": "boolean"}, "budget_min": {"type": "number", "exclusiveMinimum": 0},
+              "paper": {"type": "boolean"}, "in_game": {"type": "boolean"},
+              "strategy": {"type": "string", "description": "Strategy tag, e.g. flip, deals, craft:alchemy"},
+              "budget_min": {"type": "number", "exclusiveMinimum": 0},
               "tasks": {"type": "array", "items": _task, "minItems": 1, "maxItems": tasks.MAX_TASKS}}}},
           ["plan"], lambda conn, plan: tasks.publish(conn, plan), user_db=True, read_only=False),
     _tool("get_plan", "Get plan",

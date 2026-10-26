@@ -455,6 +455,8 @@ hand. The flow:
    `in_game: true`: they're scored after the fact with `evaluate_plan`, and they replace only
    other paper-only plans, so a real plan stays in the addon while the trader paper trades.
    `get_plan` returns the newest plan and names the one the addon gets (`in_game_plan`).
+   An optional plan-level `strategy` tag (`flip`, `deals`, `craft:alchemy`, ...) groups plans
+   in `get_paper_scorecard`.
 2. `goldmine.py push` (the app does this after every sync) writes `Tasks.lua` next to `Data.lua`
    in every installed copy of the addon (`GET /api/v1/addon-tasks`; when no plan is active it writes an empty plan). `/reload` loads it.
 3. In game, `/goldmine tasks` (or opening the AH, mailbox, a merchant or a profession) shows the
@@ -493,6 +495,7 @@ before real gold is used, and keep score afterwards. All read-only except `journ
 |---|---|
 | `backtest` | replay `flip`, `deals` or `craft` over stored history (default: last 30 days): at each decision time (13h and 1h UTC) build the plan the strategy would have published from data up to then, fill it, step on. Realized P&L, ROI, capital used, max drawdown, sell-through, days held, unsold inventory at conservative value, a sample plan, and a `backtest_id` to cite as `bt:<id>` |
 | `evaluate_plan` | score a plan in the Tasks.lua format, or a published plan by id, against what happened after `start_ts`: per-task fills, sales, expiries and fees |
+| `get_paper_scorecard` | every paper plan in a window (default 30 days) scored with `evaluate_plan` and totalled per strategy tag (the plan's `strategy`): plans, complete, profitable, realized and marked P&L, capital, ROI, sell-through, predicted `ev` vs result |
 | `get_lots` | FIFO lots from the AH ledger and your crafts: open lots at cost and conservative value, days held, realized P&L per item, deposit/cancel fees, the last 50 crafts with what each reagent cost (`crafts`, `craft_totals`) |
 | `get_scorecard` | per strategy tag: realized P&L, ROI, sell-through (sold or used in crafts), days held, open exposure; weekly AH cash flow; prediction error of journal hypotheses |
 | `journal_write` / `journal_read` | hypotheses, decisions, lessons and notes with strategy, items, a prediction, evidence refs (`task:`, `plan:`, `tx:`, `bt:`, `journal:`), expiry and supersession |

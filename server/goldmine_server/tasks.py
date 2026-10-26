@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS plan_loads (  -- the addon's acknowledgement: the pla
 """
 
 STATUSES = ("done", "partial", "skipped", "blocked", "below_floor", "expired")
-PLAN_KEYS = {"plan", "created", "expires", "paper", "in_game", "budget_min", "tasks"}
+PLAN_KEYS = {"plan", "created", "expires", "paper", "in_game", "strategy", "budget_min", "tasks"}
 # Plans the addon gets: real ones, and paper ones published with in_game. Other paper plans are
 # only scored (evaluate_plan), so they neither replace nor are replaced by what's in the game.
 IN_GAME = "(paper = 0 OR json_extract(body, '$.in_game') = 1)"
@@ -74,6 +74,7 @@ COMMON_OPTIONAL = {"why", "ev", "after"}
 POSITIVE_INTS = {"item", "recipe", "qty", "max_unit", "sell", "floor", "ceil", "below", "above"}  # ids and copper
 _PLAN_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_STRATEGY = re.compile(r"^[A-Za-z0-9:._-]{1,64}$")  # flip, deals, craft:alchemy, ...
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 # Field order in Tasks.lua, for readable diffs; anything else follows alphabetically.
@@ -153,6 +154,8 @@ def validate(plan, now: int | None = None) -> list[str]:
         errors.append("expires is in the past")
     if "created" in plan and not _is_int(plan["created"]):
         errors.append("created must be unix seconds")
+    if "strategy" in plan and not (isinstance(plan["strategy"], str) and _STRATEGY.match(plan["strategy"])):
+        errors.append("strategy must be 1-64 letters, digits, ':', '.', '_' or '-'")
     for k in ("paper", "in_game"):
         if k in plan and not isinstance(plan[k], bool):
             errors.append(f"{k} must be true or false")
@@ -187,6 +190,8 @@ def normalize(plan: dict, now: int | None = None) -> dict:
            "expires": plan["expires"], "paper": bool(plan.get("paper", False)), "budget_min": plan["budget_min"],
            "tasks": []}
     out["in_game"] = not out["paper"] or bool(plan.get("in_game", False))
+    if plan.get("strategy"):
+        out["strategy"] = plan["strategy"]
     for t in plan["tasks"]:
         t = dict(t)
         if t["kind"] == "post":
