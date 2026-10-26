@@ -62,10 +62,11 @@ rest still works on older data. Then gather, in as few calls as possible:
 
 ## 2. Reconcile the last plan
 
-**Paper plans** never reached the game, so there are no task results. Score each paper plan
-published since the last run with `evaluate_plan` (pass its id; the default 72h horizon, or
-less if it hasn't elapsed yet), and record the scores against each strategy tag in the journal
-(`decision` or `note` with `prediction.realized`). That record is what promotes or benches a
+**Paper plans** never reached the game, so there are no task results. Call
+`get_paper_scorecard` (one call scores every paper plan of the last 30 days with
+`evaluate_plan` and totals them by `strategy`). For hypotheses whose plans are now `complete`,
+write `prediction.realized` from the plan's `marked_pnl` and close them. Use `evaluate_plan` on
+a single plan id only to see its per-task fills. The scorecard is what promotes or benches a
 strategy (step 5).
 
 For each task in the last real plan:
@@ -128,7 +129,9 @@ For each tag, check the scorecard and journal:
 gold until they say otherwise, whatever the maturity table above would allow. Within that, be
 creative. Paper costs nothing, so run several strategies side by side, try variants (other
 thresholds, other items, other hold times, realm-AH ideas the backtests can't see), and publish
-one paper plan per idea in the same run (`p<date>a`, `p<date>b`, ...), each with one strategy
+one paper plan per idea in the same run (`p<date>a`, `p<date>b`, ...), each with one
+`strategy` tag on the plan itself (`flip`, `deals`, `craft:<profession>`, or a new name such as
+`undercut-relist`; keep a name stable across runs so it accumulates a record) and the same
 tag in its journal hypothesis. Paper plans aren't bound by the 20/30 minute budget, but keep
 `est_min` honest, since it's part of what's being tested. Leave out `in_game` so they stay off
 the addon, unless the user asks to see one in game.
@@ -182,5 +185,5 @@ it. A paper-only plan needs none of this.
 ## Review mode
 
 `review` (weekly, or when the user asks): steps 1–3, then a written review covering the scorecard
-by strategy, the experiment budget used, lessons to add or expire, strategies to promote or
+by strategy (`get_paper_scorecard` while paper trading), the experiment budget used, lessons to add or expire, strategies to promote or
 bench, and tooling gaps. Write the decisions to the journal. Don't publish a plan.

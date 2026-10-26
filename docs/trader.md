@@ -51,6 +51,7 @@ The trader publishes a plan through MCP. The client downloads it as `Tasks.lua` 
 ```lua
 GoldmineTasks = {
   plan = "p2026-10-20a", created = 1792500000, expires = 1792540000, -- addon ignores expired plans
+  strategy = "flip",        -- optional tag; get_paper_scorecard totals paper plans by it
   paper = false,            -- paper plans show in the addon but never enable action buttons
                             -- (only those published with in_game = true; other paper plans stay on the server)
   budget_min = 20,
@@ -135,5 +136,6 @@ their branches merge cleanly.
 - Account state: `get_account`, `get_inventory`, `get_owned_auctions`, `get_ledger`,
   `get_recipes`, `get_craft_results`, `get_token_price`, `get_item_info`
 - Task queue: `publish_plan`, `get_plan`, `get_task_results`
-- Learning: `journal_write`, `journal_read`, `get_lots`, `get_scorecard`, `backtest`, `evaluate_plan`
+- Learning: `journal_write`, `journal_read`, `get_lots`, `get_scorecard`, `backtest`, `evaluate_plan`,
+  `get_paper_scorecard`
 - Risk (risk.py): enforced inside `publish_plan`; `get_risk_status` reports the same numbers

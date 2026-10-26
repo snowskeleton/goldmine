@@ -253,5 +253,35 @@ class TraderMarketsTests(SimBase):
             sim.evaluate_plan(self.conn, "nope")
 
 
+class PaperScorecardTests(SimBase):
+    build_swing = BacktestTests.build_swing
+
+    def test_paper_plans_are_scored_and_totalled_by_strategy(self):
+        from goldmine_server import tasks
+        self.build_swing(3)
+
+        def plan(pid, at, **over):
+            return {"plan": pid, "created": at, "expires": T0 + 10 * DAY, "paper": True, "budget_min": 5,
+                    "tasks": [{"id": "t1", "kind": "buy", "item": ORE, "qty": 10, "max_unit": 1_000_000,
+                               "est_min": 1, "ev": 50_000}], **over}
+        for pid, at, over in (("a", T0 + 2 * HOUR, {"strategy": "flip"}), ("b", T0 + 4 * HOUR, {"strategy": "flip"}),
+                              ("c", T0 + 6 * HOUR, {})):
+            tasks.publish(self.conn, plan(pid, at, **over), at)
+        r = sim.paper_scorecard(self.conn, since=T0, until=T0 + 3 * DAY, horizon_hours=24)
+        self.assertEqual([p["plan"] for p in r["plans"]], ["c", "b", "a"])  # newest first
+        one = sim.evaluate_plan(self.conn, "a", horizon_hours=24)
+        a = r["plans"][2]
+        self.assertEqual((a["strategy"], a["marked_pnl"], a["units_acquired"], a["predicted_ev"]),
+                         ("flip", one["marked_pnl"], one["units_acquired"], 50_000))
+        by = {t["strategy"]: t for t in r["strategies"]}
+        self.assertEqual((by["flip"]["plans"], by["untagged"]["plans"]), (2, 1))
+        flip = [p for p in r["plans"] if p["strategy"] == "flip"]
+        self.assertEqual(by["flip"]["marked_pnl"], sum(p["marked_pnl"] for p in flip))
+        self.assertEqual(by["flip"]["prediction_error"], by["flip"]["marked_pnl"] - 100_000)
+        only = sim.paper_scorecard(self.conn, since=T0, until=T0 + 3 * DAY, strategy="untagged", limit=5)
+        self.assertEqual([p["plan"] for p in only["plans"]], ["c"])
+        self.assertEqual(sim.paper_scorecard(self.conn, since=T0 + 5 * HOUR, until=T0 + 3 * DAY, limit=1)["plans"][0]["plan"], "c")
+
+
 if __name__ == "__main__":
     unittest.main()

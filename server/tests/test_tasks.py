@@ -150,6 +150,11 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(tasks.active_plan(self.conn, NOW + 60)["plan"], "paper3")
         self.assertIsNone(tasks.get_plan(self.conn, "paper2", NOW + 60)["superseded_by"])
         self.assertIn("in_game must be true or false", tasks.validate(sample_plan(in_game=1), NOW))
+        self.assertEqual(tasks.validate(sample_plan(strategy="craft:alchemy"), NOW), [])
+        self.assertIn("strategy must be", tasks.validate(sample_plan(strategy="two words"), NOW)[0])
+        self.assertEqual(tasks.get_plan(self.conn, "paper3", NOW + 60)["plan"].get("strategy"), None)
+        tasks.publish(self.conn, sample_plan(plan="paper4", paper=True, strategy="flip"), NOW + 70)
+        self.assertEqual(tasks.get_plan(self.conn, "paper4", NOW + 80)["plan"]["strategy"], "flip")
 
     def test_rejected_plan_is_not_stored(self):
         with self.assertRaises(tasks.PlanRejected) as cm:
