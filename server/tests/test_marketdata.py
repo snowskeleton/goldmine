@@ -156,12 +156,12 @@ class MarketDataTests(unittest.TestCase):
     def test_values_and_deals(self):
         v = md.market_values(self.conn, "us-testrealm", [WOOL])
         (w,) = v["items"]
-        self.assertEqual((w["current_min"], w["market_value"]), (20, 80))  # 3h at 100c, 1h at 20c
+        self.assertEqual((w["current_min"], w["market_value"]), (20, 100))  # median of 3h at 100c, 1h at 20c
         self.assertAlmostEqual(w["sold_per_day"], 4 / (3 / 24))
         busiest = md.market_values(self.conn, "us-testrealm", limit=1)
         self.assertEqual((busiest["total"], busiest["items"][0]["item_id"], busiest["next_offset"]), (3, LINEN, 1))
         (deal,) = md.deals(self.conn, "us-testrealm")["deals"]
-        self.assertEqual((deal["item_id"], deal["name"], deal["profit_per_unit"]), (WOOL, "Wool Cloth", 56))
+        self.assertEqual((deal["item_id"], deal["name"], deal["profit_per_unit"]), (WOOL, "Wool Cloth", 75))
 
     def test_http_routes(self):
         self.assertEqual(self.api.get("/api/v1/market/markets").status_code, 401)
@@ -172,7 +172,7 @@ class MarketDataTests(unittest.TestCase):
         hist = self.get("/api/v1/market/history", market="us-testrealm", item=LINEN, since=T0, resolution="raw")
         self.assertEqual(hist["total"], 4)
         self.assertEqual(self.get("/api/v1/market/values", market="us-testrealm", item=WOOL)["items"][0]["market_value"],
-                         80)
+                         100)
         self.assertEqual(self.get("/api/v1/market/deals", market="us-testrealm")["total"], 1)
         self.assertEqual(self.get("/api/v1/market/crafts")["sets"], [])  # no recipes uploaded
         r = self.api.get("/api/v1/market/current", params={"market": "nope", "item": LINEN}, headers=self.h)

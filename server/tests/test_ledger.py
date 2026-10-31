@@ -138,6 +138,9 @@ class ImportTests(unittest.TestCase):
                          [(15, 200), (16, 40), (20, 500)])
         self.assertIn((82800, 42, 90000, 2), q("SELECT item_id, variant, unit_price, quantity FROM scan_rows"))
         self.assertEqual(q("SELECT recipe_id, profession, output_item FROM recipes"), [(100, "Tailoring", 2996)])
+        [(cooldown, ready_at)] = q("SELECT cooldown, ready_at FROM recipes")
+        self.assertEqual(cooldown, 86400)  # a daily cooldown
+        self.assertGreater(ready_at, 0)
         self.assertEqual(q("SELECT item_id, quantity FROM recipe_reagents"), [(2589, 2)])
         inv = dict(((o, l, i), n) for o, l, i, n in q("SELECT owner, location, item_id, count FROM inventory"))
         self.assertEqual(inv[("Snow-Testrealm", "bags", 2589)], 25)
@@ -173,6 +176,7 @@ class ImportTests(unittest.TestCase):
                            "FROM craft_results"), [("Snow-Testrealm:c1", 100, 2996, 2, 3, 1, 30, "[[2589, 1]]")])
         meta = {r[0]: r[1:] for r in q("SELECT item_id, stack_size, sell_price, class_id, expansion FROM item_meta")}
         self.assertEqual(meta[2589], (200, 10, 7, 0))
+        self.assertEqual(q("SELECT name FROM item_meta WHERE item_id = 2589"), [("Item 2589",)])
         self.assertNotIn(2592, meta)
 
     def test_owned_auctions_follow_the_latest_list(self):

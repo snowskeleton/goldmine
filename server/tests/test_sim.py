@@ -127,7 +127,7 @@ class FillTests(SimBase):
         self.assertEqual(r["units_sold"], 4)
 
     def test_craft_uses_bought_reagents(self):
-        self.conn.execute("INSERT INTO recipes VALUES ('Snow-Proudmoore', 7, 'Blacksmithing', 'Bar', ?, 1)", (BAR,))
+        self.conn.execute("INSERT INTO recipes (char_key, recipe_id, profession, name, output_item, output_qty) VALUES ('Snow-Proudmoore', 7, 'Blacksmithing', 'Bar', ?, 1)", (BAR,))
         self.conn.execute("INSERT INTO recipe_reagents VALUES ('Snow-Proudmoore', 7, ?, 5)", (ORE,))
         self.snaps([[lot(1, ORE, 100, 10), lot(9, BAR, 50, 100)]] * 3)
         plan = {"created": T0, "tasks": [

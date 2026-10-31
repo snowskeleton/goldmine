@@ -37,7 +37,7 @@ class PricingTests(unittest.TestCase):
                 auctions.append(commodity(99, BOLT, 3, 40))
             store.store_snapshot(self.conn, "us-commodities", {"auctions": auctions}, NOW - (4 - h) * HOUR)
         # Recipe: 2 linen -> 1 bolt, known by Snow.
-        self.conn.execute("INSERT INTO recipes VALUES ('Snow-Testrealm', 100, 'Tailoring', 'Bolt of Linen Cloth', ?, 1)", (BOLT,))
+        self.conn.execute("INSERT INTO recipes (char_key, recipe_id, profession, name, output_item, output_qty) VALUES ('Snow-Testrealm', 100, 'Tailoring', 'Bolt of Linen Cloth', ?, 1)", (BOLT,))
         self.conn.execute("INSERT INTO recipe_reagents VALUES ('Snow-Testrealm', 100, ?, 2)", (LINEN,))
         self.conn.commit()
 
@@ -53,6 +53,8 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(bolt.sell, 40)            # can't sell above the current lowest listing
         # Each hour the previous 10-bolt auction vanished: 4 intervals x 10 over 4 hours.
         self.assertAlmostEqual(bolt.sold_per_day, 40 / (4 / 24))
+        self.assertEqual(bolt.bought_per_day, 0)  # whole auctions vanished: none definitely bought
+        self.assertEqual(bolt.depth[0], 3)        # units within 5% of the 40c minimum
 
     def test_market_stats_cache_follows_new_snapshots(self):
         before = pricing.price_table(self.conn, now=NOW)[(BOLT, 0)]
@@ -61,7 +63,7 @@ class PricingTests(unittest.TestCase):
         store.store_snapshot(self.conn, "us-commodities", {"auctions": [commodity(30, BOLT, 10, 500)]}, NOW + HOUR)
         self.conn.commit()
         after = pricing.price_table(self.conn, now=NOW + HOUR)[(BOLT, 0)]
-        self.assertGreater(after.market_value, before.market_value)
+        self.assertNotEqual(after.sold_per_day, before.sold_per_day)
 
     def test_fresher_scan_overrides_current(self):
         self.conn.execute("INSERT INTO scans VALUES ('Snow-Testrealm:s1', 'Snow-Testrealm', ?, 'commodity')", (NOW + 600,))
@@ -78,6 +80,36 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(craft.revenue, int(40 * 0.95))
         self.assertEqual(craft.profit, 38 - 30)
         self.assertEqual(craft.crafters, ["Snow-Testrealm"])
+
+    def test_market_value_ignores_a_few_hours_of_troll_listings(self):
+        self.assertEqual(pricing.weighted_median([(100, 3.0), (5_000_000, 1.0)]), 100)
+        self.assertEqual(pricing.weighted_median([]), None)
+
+    def test_cost_for_a_thin_cheap_tier_under_a_wall(self):
+        # 145 units near 1.74g, then most of 64k units at 25.9g: a few crafts cost the cheap price.
+        p = pricing.Price(2447, current_min=17_400, current_p10=259_000, current_median=259_000,
+                          quantity=64_064, depth=(145, 145, 145))
+        self.assertEqual(p.cost_for(10), 17_400)
+        self.assertEqual(p.cost_for(1_000), 259_000)
+        self.assertEqual(pricing.Price(1, current_min=10, book=[(10, 5), (20, 100)]).cost_for(6), 20)
+        self.assertEqual(pricing.Price(1, current_p10=30, market_value=40).cost_for(5), 30)  # nothing listed
+
+    def test_craft_with_unlisted_output_has_no_revenue(self):
+        P = pricing.Price
+        prices = {(LINEN, 0): P(LINEN, current_min=15, depth=(100, 100, 100)),
+                  (BOLT, 0): P(BOLT, market_value=1_000_000)}  # an old troll listing, none up now
+        [craft] = pricing.craft_report(self.conn, prices)
+        self.assertEqual((craft.cost, craft.revenue, craft.profit, craft.listed), (30, None, None, False))
+
+    def test_recipe_ranks_collapse_into_the_best(self):
+        self.conn.execute("INSERT INTO recipes (char_key, recipe_id, profession, name, output_item, output_qty, "
+                          "cooldown, ready_at) VALUES ('Snow-Testrealm', 101, 'Tailoring', 'Bolt of Linen Cloth', ?, 2,"
+                          " 72000, ?)", (BOLT, NOW + 10 ** 9))
+        self.conn.execute("INSERT INTO recipe_reagents VALUES ('Snow-Testrealm', 101, ?, 2)", (LINEN,))
+        prices = pricing.price_table(self.conn, now=NOW)
+        [craft] = pricing.craft_report(self.conn, prices)
+        self.assertEqual((craft.recipe_id, craft.ranks, craft.output_qty), (101, [100], 2))
+        self.assertEqual((craft.cooldown, craft.ready_at), (72000, NOW + 10 ** 9))
 
     def test_deal_report(self):
         prices = pricing.price_table(self.conn, now=NOW)
@@ -135,7 +167,7 @@ class MultiGameTests(unittest.TestCase):
         # A Mists character's in-game scan of linen must not affect retail prices.
         c.execute("INSERT INTO scans VALUES ('Old-Nazgrim:s1', 'Old-Nazgrim', ?, 'commodity')", (NOW + 60,))
         c.execute("INSERT INTO scan_rows VALUES ('Old-Nazgrim:s1', ?, 0, 12, 50)", (LINEN,))
-        c.execute("INSERT INTO recipes VALUES ('Old-Nazgrim', 100, 'Tailoring', 'Bolt', ?, 1)", (BOLT,))
+        c.execute("INSERT INTO recipes (char_key, recipe_id, profession, name, output_item, output_qty) VALUES ('Old-Nazgrim', 100, 'Tailoring', 'Bolt', ?, 1)", (BOLT,))
         c.execute("INSERT INTO recipe_reagents VALUES ('Old-Nazgrim', 100, ?, 2)", (LINEN,))
         c.commit()
         self.args = argparse.Namespace(config=os.path.join(self.tmp.name, "none.toml"), hours=72,
