@@ -478,13 +478,16 @@ def owned_item_ids() -> set[int]:
     return ids
 
 
+ITEM_INFO_PER_RUN = 1000  # one API call each; a new profession catalogue is often several hundred items
+
+
 def refresh_item_info(conn, client, cfg: dict, log=print) -> int:
     """Cache Blizzard item details for owned items that don't have them yet (bounded per run)."""
     retail = [m for m in cfg.get("market", []) if m.get("namespace") == f"dynamic-{m.get('region')}"]
     if not retail:
         return 0
     n = market.fetch_item_info(conn, client, retail[0]["region"], retail[0]["namespace"], owned_item_ids(),
-                               log=log)
+                               limit=ITEM_INFO_PER_RUN, log=log)
     if n:
         log(f"item info: {n} items cached")
     return n

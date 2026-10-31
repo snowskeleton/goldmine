@@ -1,13 +1,17 @@
 """Price model and reports built on collected snapshots, in-game scans, recipes, and the ledger.
 
 Definitions (all copper per unit):
-  market value  time-weighted average of the 10th-percentile price over the window — resistant
-                to single cheap listings and to short spikes
+  market value  time-weighted median of the 10th-percentile price over the window — resistant
+                to single cheap listings, and to troll listings that hold the price up for a while
+                when supply runs out
   current min   lowest price in the freshest data (API snapshot or your own in-game scan)
   buy price     what restocking costs now: freshest p10 (falls back to min, then market value)
   sell price    what you can realistically list at: min(market value, current min)
   sold/day      units per day that left the AH early: definite partial purchases plus listings
                 that vanished with time to spare (sold or cancelled, so an upper bound)
+  bought/day    the definite part of sold/day alone: units bought out of listings still up
+  cost for n    what buying n units right now costs per unit: the dearest listing reached walking up
+                from the cheapest (from an in-game scan's full list, else the depth bands)
 
 Market data comes from store.py's change-based tables: item states are replayed from the
 daily keyframe at or before the window start.
@@ -40,10 +44,36 @@ class Price:
     sold_per_day: float = 0.0
     as_of: int | None = None
     sources: set = field(default_factory=set)
+    bought_per_day: float = 0.0
+    current_median: int | None = None
+    quantity: int | None = None
+    depth: tuple = ()               # units within +5/10/25% of current_min
+    book: list | None = None        # [(unit price, qty)] cheapest first, from an in-game scan
 
     @property
     def buy(self) -> int | None:
         return self.current_p10 or self.current_min or self.market_value
+
+    def cost_for(self, units: float) -> int | None:
+        """Unit price that buying `units` now reaches. A thin cheap tier under a wall of dear
+        listings is what p10 gets wrong: a few crafts' worth costs the cheap price."""
+        if self.book:
+            seen = 0
+            for price, qty in self.book:
+                seen += qty
+                if seen >= units:
+                    return price
+            return self.book[-1][0]
+        mn = self.current_min
+        if mn is None:
+            return self.buy
+        levels = [(have, int(mn * f)) for f, have in zip((1.0, 1.10, 1.25), self.depth)]
+        if self.quantity:
+            levels += [(self.quantity * 0.10, self.current_p10), (self.quantity * 0.5, self.current_median)]
+        for have, price in levels:
+            if have is not None and price and have >= units:
+                return max(mn, price)
+        return max(mn, self.current_median or self.current_p10 or mn)
 
     @property
     def sell(self) -> int | None:
@@ -66,7 +96,8 @@ def replay(conn, market: str, since: int):
 
 
 def market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
-    """Per item over [since, latest snapshot]: (time-weighted p10, units sold per day)."""
+    """Per item over [since, latest snapshot]: (time-weighted median p10, units sold per day,
+    units definitely bought per day)."""
     times, items = replay(conn, market, since)
     in_window = sorted(t for t in times.values() if t >= since)
     if not in_window:
@@ -76,21 +107,33 @@ def market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
     days = (last - in_window[0]) / 86400 if len(in_window) > 1 else 0
     out = {}
     for key, states in items.items():
-        weighted = weight = 0.0
-        moved = 0
+        spans = []
+        moved = bought = 0
         for i, (snap, state, sold, gone) in enumerate(states):
             t0 = times[snap]
             t1 = times[states[i + 1][0]] if i + 1 < len(states) else end
             if t0 > since:
                 moved += sold + gone
+                bought += sold
             lo, hi = max(t0, since), min(t1, end)
             p10, qty = state[1], state[3]
             if hi > lo and p10 is not None and qty > 0:
-                weighted += p10 * (hi - lo)
-                weight += hi - lo
-        mv = int(weighted / weight) if weight else None
-        out[key] = (mv, moved / days if days else 0.0)
+                spans.append((p10, hi - lo))
+        out[key] = (weighted_median(spans), moved / days if days else 0.0, bought / days if days else 0.0)
     return out
+
+
+def weighted_median(spans: list[tuple[int, float]]) -> int | None:
+    """Median of (value, weight) pairs: the value at half the total weight."""
+    if not spans:
+        return None
+    spans.sort()
+    half, seen = sum(w for _, w in spans) / 2, 0.0
+    for value, w in spans:
+        seen += w
+        if seen >= half:
+            return int(value)
+    return int(spans[-1][0])
 
 
 # market_stats replays every item state in the window, which is most of a report's time, yet its
@@ -146,27 +189,30 @@ def price_table(conn, window_hours: int = 72, markets: list[str] | None = None,
 
     # Smoothed value and sales per market; when an item is in several markets keep the busiest.
     for mkt in mids:
-        for key, (mv, per_day) in cached_market_stats(conn, mkt, since).items():
+        for key, (mv, per_day, bought) in cached_market_stats(conn, mkt, since).items():
             cur = table.get(key)
             if cur and cur.sold_per_day >= per_day:
                 continue
-            table[key] = Price(key[0], key[1], market_value=mv, sold_per_day=per_day, sources={mkt})
+            table[key] = Price(key[0], key[1], market_value=mv, sold_per_day=per_day, sources={mkt},
+                               bought_per_day=bought)
 
     # Current prices from each market's latest state.
     for mkt, mid in mids.items():
-        for item, variant, mn, p10, lm in conn.execute("""
-                SELECT c.item_id, c.variant, c.min_price, c.p10, s.last_modified
+        for item, variant, mn, p10, med, qty, d5, d10, d25, lm in conn.execute("""
+                SELECT c.item_id, c.variant, c.min_price, c.p10, c.median, c.quantity, c.depth5, c.depth10,
+                       c.depth25, s.last_modified
                 FROM item_current c JOIN snapshots s ON s.id = (SELECT MAX(id) FROM snapshots WHERE market = ?)
                 WHERE c.market_id = ? AND s.last_modified >= ?""", (mkt, mid, since)):
             pr = table.setdefault((item, variant), Price(item, variant, sources={mkt}))
             if mkt in pr.sources and mn is not None:
                 pr.current_min, pr.current_p10, pr.as_of = mn, p10, lm
+                pr.current_median, pr.quantity, pr.depth = med, qty, (d5, d10, d25)
 
     # Your own in-game scans override "current" when they're fresher than the API snapshot.
-    for item, variant, ts, mn, p10 in _latest_scans(conn, since, scan_chars):
+    for item, variant, ts, mn, p10, book in _latest_scans(conn, since, scan_chars):
         pr = table.setdefault((item, variant), Price(item, variant))
         if pr.as_of is None or ts > pr.as_of:
-            pr.current_min, pr.current_p10, pr.as_of = mn, p10, ts
+            pr.current_min, pr.current_p10, pr.as_of, pr.book = mn, p10, ts, book
             pr.sources.add("scan")
             if pr.market_value is None:
                 pr.market_value = p10
@@ -174,7 +220,7 @@ def price_table(conn, window_hours: int = 72, markets: list[str] | None = None,
 
 
 def _latest_scans(conn, since: int, chars: list[str] | None = None):
-    """Latest in-game scan per item -> (item, variant, ts, min, p10)."""
+    """Latest in-game scan per item -> (item, variant, ts, min, p10, [(price, qty)] cheapest first)."""
     if chars is not None and not chars:
         return
     char_filter = f" AND s.char_key IN ({','.join('?' * len(chars))})" if chars else ""
@@ -199,12 +245,15 @@ def _latest_scans(conn, since: int, chars: list[str] | None = None):
             if seen >= total * 0.10:
                 p10 = price
                 break
-        yield item, variant, ts, pairs[0][0], p10
+        yield item, variant, ts, pairs[0][0], p10, pairs
 
 
 # ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
+
+CRAFT_BATCH = 10  # crafts' worth of reagents a craft's cost is priced for
+
 
 @dataclass
 class Craft:
@@ -218,6 +267,11 @@ class Craft:
     revenue: int | None
     sold_per_day: float
     missing: list[int]
+    bought_per_day: float = 0.0
+    listed: bool = True             # the output is on the AH now; revenue is None when it isn't
+    ranks: list[int] = field(default_factory=list)   # other ranks of the same recipe, not shown
+    cooldown: int | None = None     # seconds between crafts, when the recipe has a cooldown
+    ready_at: int | None = None     # unix seconds the cooldown ends, when it was running
 
     @property
     def profit(self) -> int | None:
@@ -226,35 +280,60 @@ class Craft:
         return self.revenue - self.cost
 
 
-def craft_report(conn, prices: dict, chars: list[str] | None = None) -> list[Craft]:
-    """Recipes known by `chars` (None = everyone), priced with `prices`."""
+def craft_report(conn, prices: dict, chars: list[str] | None = None, batch: int = CRAFT_BATCH) -> list[Craft]:
+    """Recipes known by `chars` (None = everyone), priced with `prices`: reagents at what buying
+    `batch` crafts' worth costs now, output at min(market value, lowest listing) after the cut.
+    Ranks of one recipe (same name and output) collapse into the most profitable one."""
     recipes: dict[int, dict] = {}
-    for char_key, rid, prof, name, out, qty in conn.execute(
-            "SELECT char_key, recipe_id, profession, name, output_item, output_qty FROM recipes"):
+    for char_key, rid, prof, name, out, qty, cd, ready in conn.execute(
+            "SELECT char_key, recipe_id, profession, name, output_item, output_qty, cooldown, ready_at FROM recipes"):
         if chars is not None and char_key not in chars:
             continue
         r = recipes.setdefault(rid, {"name": name, "prof": prof, "out": out, "qty": qty or 1,
-                                     "crafters": [], "reagents": {}})
+                                     "crafters": [], "reagents": {}, "cd": cd, "ready": None})
         r["crafters"].append(char_key)
+        r["cd"] = r["cd"] or cd
+        if ready:
+            r["ready"] = min(r["ready"] or ready, ready)  # the crafter whose cooldown ends first
     for char_key, rid, item, qty in conn.execute("SELECT char_key, recipe_id, item_id, quantity FROM recipe_reagents"):
         if rid in recipes and char_key in recipes[rid]["crafters"]:
             recipes[rid]["reagents"][item] = qty  # same across crafters
 
-    out = []
+    now = int(time.time())
+    best: dict[tuple, Craft] = {}
     for rid, r in recipes.items():
         cost, missing = 0, []
         for item, qty in r["reagents"].items():
             p = prices.get((item, 0))
-            if p and p.buy:
-                cost += p.buy * qty
+            unit = p.cost_for(qty * batch) if p else None
+            if unit:
+                cost += unit * qty
             else:
                 missing.append(item)
         op = prices.get((r["out"], 0))
-        revenue = int(op.sell * r["qty"] * (1 - AH_CUT)) if op and op.sell else None
-        out.append(Craft(rid, r["name"], r["prof"], sorted(set(r["crafters"])), r["out"], r["qty"],
-                         None if missing else cost, revenue, op.sold_per_day if op else 0.0, missing))
+        listed = bool(op and op.current_min)
+        revenue = int(op.sell * r["qty"] * (1 - AH_CUT)) if listed and op.sell else None
+        c = Craft(rid, r["name"], r["prof"], sorted(set(r["crafters"])), r["out"], r["qty"],
+                  None if missing else cost, revenue, op.sold_per_day if op else 0.0, missing,
+                  op.bought_per_day if op else 0.0, listed, [], r["cd"],
+                  r["ready"] if r["ready"] and r["ready"] > now else None)
+        key = (r["prof"], r["name"] or rid, r["out"])
+        cur = best.get(key)
+        if cur is None:
+            best[key] = c
+        elif _craft_rank(c) > _craft_rank(cur):
+            c.ranks = sorted(cur.ranks + [cur.recipe_id])
+            best[key] = c
+        else:
+            cur.ranks = sorted(cur.ranks + [rid])
+    out = list(best.values())
     out.sort(key=lambda c: (c.profit is None, -(c.profit or 0)))
     return out
+
+
+def _craft_rank(c: Craft) -> tuple:
+    """Which of a recipe's ranks to show: priced beats unpriced, then profit, then more output."""
+    return (c.profit is not None, c.profit or 0, c.output_qty, -c.recipe_id)
 
 
 @dataclass

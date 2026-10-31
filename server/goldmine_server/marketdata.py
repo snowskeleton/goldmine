@@ -81,6 +81,20 @@ def _names(conn, ids) -> dict[int, str | None]:
         chunk = ids[i:i + 500]
         out.update(conn.execute(f"SELECT item_id, name FROM items WHERE item_id IN ({','.join('?' * len(chunk))})",
                                 chunk))
+    return _game_names(conn, out)
+
+
+def _game_names(conn, out: dict) -> dict:
+    """Fill names the item API hasn't given yet from what the game client reported (item_meta)."""
+    missing = [i for i, n in out.items() if not n]
+    for i in range(0, len(missing), 500):
+        chunk = missing[i:i + 500]
+        try:
+            out.update((k, n) for k, n in conn.execute(
+                f"SELECT item_id, name FROM item_meta WHERE name IS NOT NULL AND item_id IN ({','.join('?' * len(chunk))})",
+                chunk))
+        except sqlite3.OperationalError:  # no game DB attached
+            break
     return out
 
 
@@ -276,7 +290,8 @@ def _price_dict(p: pricing.Price, name: str | None, labels: dict) -> dict:
     return {"item_id": p.item_id, "variant": p.variant, "variant_label": labels.get(p.variant), "name": name,
             "market_value": p.market_value,
             "current_min": p.current_min, "current_p10": p.current_p10, "buy": p.buy, "sell": p.sell,
-            "sold_per_day": round(p.sold_per_day, 2), "as_of": p.as_of, "as_of_iso": iso(p.as_of)}
+            "sold_per_day": round(p.sold_per_day, 2), "definite_sold_per_day": round(p.bought_per_day, 2),
+            "as_of": p.as_of, "as_of_iso": iso(p.as_of)}
 
 
 def market_values(conn, market: str, items=None, hours: int = 72, min_sold: float = 0.0,
@@ -333,29 +348,44 @@ def _deal_dict(d: pricing.Deal, names, labels: dict) -> dict:
             "sold_per_day": round(d.sold_per_day, 2)}
 
 
-def crafts(conn, hours: int = 72, limit: int | None = None) -> dict:
+MAX_CRAFTS = 1000  # crafts per market set per request
+
+
+def craft_row(c, names: dict) -> dict:
+    return {"recipe_id": c.recipe_id, "name": c.name or names.get(c.output_item), "profession": c.profession,
+            "crafters": c.crafters, "output_item": c.output_item, "output_name": names.get(c.output_item),
+            "output_qty": c.output_qty, "cost": c.cost, "revenue": c.revenue, "profit": c.profit,
+            "listed": c.listed, "sold_per_day": round(c.sold_per_day, 2),
+            "definite_sold_per_day": round(c.bought_per_day, 2), "cooldown": c.cooldown,
+            "ready_at": c.ready_at, "ready_at_iso": iso(c.ready_at), "other_ranks": c.ranks,
+            "missing_prices": [{"item_id": m, "name": names.get(m)} for m in c.missing]}
+
+
+def crafts(conn, hours: int = 72, limit: int | None = None, offset: int = 0, profession: str | None = None,
+           min_sold: float = 0.0, priced_only: bool = False) -> dict:
     """The user's craft report per market set (needs `conn` from ro_conn(user_id)): every recipe
-    their characters know, costed at current p10 and sold at min(market value, lowest) after
-    the AH cut. Same numbers as `goldmine.py crafts`."""
-    hours, limit = _clamp(hours, 1, 24 * 30, 72), _clamp(limit, 1, MAX_ITEMS, 40)
+    their characters know, reagents costed at what buying CRAFT_BATCH crafts' worth costs now,
+    sold at min(market value, lowest listing) after the AH cut. Same numbers as `goldmine.py crafts`."""
+    hours, limit = _clamp(hours, 1, 24 * 30, 72), _clamp(limit, 1, MAX_CRAFTS, 40)
+    offset = max(0, int(offset or 0))
     exports = ledger.set_reports(conn, services.cli_args(conn, hours=hours))
     sets = []
     for ex in exports:
-        if not ex.crafts:
+        found = [c for c in ex.crafts
+                 if (not profession or (c.profession or "").lower() == profession.lower())
+                 and c.bought_per_day >= (min_sold or 0) and (not priced_only or c.profit is not None)]
+        if not found:
             continue
-        top = ex.crafts[:limit]
+        top = found[offset:offset + limit]
         names = _names(conn, {c.output_item for c in top} | {m for c in top for m in c.missing})
         st = ex.set
+        nxt = offset + limit
         sets.append({"set": {"kind": st.kind, "game": st.game, "region": st.region, "name": st.name,
                              "markets": st.markets, "realms": st.realms, "characters": st.chars},
-                     "total": len(ex.crafts),
-                     "crafts": [{"recipe_id": c.recipe_id, "name": c.name or names.get(c.output_item),
-                                 "profession": c.profession, "crafters": c.crafters, "output_item": c.output_item,
-                                 "output_qty": c.output_qty, "cost": c.cost, "revenue": c.revenue,
-                                 "profit": c.profit, "sold_per_day": round(c.sold_per_day, 2),
-                                 "missing_prices": [{"item_id": m, "name": names.get(m)} for m in c.missing]}
-                                for c in top]})
-    return {"window_hours": hours, "sets": sets}
+                     "total": len(found), "offset": offset, "next_offset": nxt if nxt < len(found) else None,
+                     "professions": sorted({c.profession for c in ex.crafts if c.profession}),
+                     "crafts": [craft_row(c, names) for c in top]})
+    return {"window_hours": hours, "batch": pricing.CRAFT_BATCH, "sets": sets}
 
 
 # ---------------------------------------------------------------------------
@@ -414,5 +444,7 @@ def api_deals(market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: fl
 
 
 @router.get("/crafts")
-def api_crafts(hours: int = 72, limit: int | None = None, user: User = Depends(auth.market_user)):
-    return _run(crafts, hours=hours, limit=limit, user_id=user.id)
+def api_crafts(hours: int = 72, limit: int | None = None, offset: int = 0, profession: str | None = None,
+               min_sold: float = 0.0, priced_only: bool = False, user: User = Depends(auth.market_user)):
+    return _run(crafts, hours=hours, limit=limit, offset=offset, profession=profession, min_sold=min_sold,
+                priced_only=priced_only, user_id=user.id)

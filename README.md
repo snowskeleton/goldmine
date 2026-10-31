@@ -222,9 +222,22 @@ share item ids. In-game scans are attributed the same way, through the character
 heatmap of sales and supply, in local time.
 
 How the numbers are defined is documented at the top of `server/goldmine_server/pricing.py`. In short:
-**market value** = average 10th-percentile price over 72h; **sold/day** = units that vanished
+**market value** = time-weighted median of the 10th-percentile price over 72h (so a few hours
+of troll listings after supply runs dry don't move it); **sold/day** = units that vanished
 between snapshots before they could have expired (cancellations count too, so it's an upper
-bound); your own in-game scans override API prices when they're fresher.
+bound); **definite sold/day** = only units bought out of listings that stayed up; your own
+in-game scans override API prices when they're fresher.
+
+**Crafts.** Reagents are costed at what buying 10 crafts' worth costs right now: walking up
+from the cheapest listing (the depth bands, or the full list from your own in-game scan), so a
+thin cheap tier under a wall of overpriced listings costs the cheap price, not p10. The output
+sells at min(market value, lowest listing) after the 5% cut, and has no price at all when none
+is listed now (`listed: false`); an old listing isn't a price. Ranks of one recipe (same name
+and output) show once, as the most profitable, with the rest in `other_ranks`. Recipes with a
+cooldown say so (`cooldown` seconds, `ready_at` while one runs). `get_crafts` and
+`/api/v1/market/crafts` take `profession`, `min_sold` (definite sales/day), `priced_only` and
+`offset`, up to 1000 rows per realm. Item names come from Blizzard's item API (the collector
+asks for up to 1000 new items per run) and, until then, from what the game client reported.
 
 **Every realm at once.** An `all-realms` market (Markets page → Browse realms → "Collect every
 realm in this namespace", or `kind = "all-realms"` with a region and namespace) collects every
@@ -292,6 +305,9 @@ The tests run against a mock, so these need checking in the real client
   `C_TradeSkillUI.GetCraftingOperationInfo(recipeID, {}, nil, false)` / the
   `TRADE_SKILL_ITEM_CRAFTED_RESULT` payload fields (`multicraft`, `resourcesReturned`,
   `concentrationSpent`) match what Market.lua reads.
+- Recipe cooldowns: that `GetSpellBaseCooldown(recipeID)` gives a transmute's cooldown in ms and
+  `C_TradeSkillUI.GetRecipeCooldown(recipeID)` returns seconds left and an is-daily flag, and
+  whether a daily cooldown that's ready reports anything (if not, it's only seen while running).
 - Craft reagents: what `C_TradeSkillUI.CraftRecipe(recipeID, count, craftingReagents, level,
   orderID)` gets from the profession window: whether `craftingReagents` lists basic reagents of
   every quality or only modified/optional ones, whether entries are `{itemID, quantity,
@@ -365,9 +381,9 @@ times are unix seconds with an ISO 8601 UTC copy (`*_iso`). Lists are capped and
 | `items?q=linen` | item search by (partial) name or id; only names the server has cached are searchable (`limit` ≤ 100) |
 | `current?market=us-proudmoore&item=2589&item=Wool Cloth` | latest state: min_price, p10, median, quantity, auctions, depth5/10/25 (≤ 100 items; ids or names, comma-separated works too) |
 | `history?market=…&item=…&since=&until=&resolution=hourly` | the item's state at every snapshot, rebuilt from change-based storage (a state holds until the item's next row); `raw`, `hourly` or `daily` (UTC buckets: lowest min, mean p10/median/quantity, summed sold/gone, `close_*`). Default window 7 days, at most 90; ≤ 1000 rows per page |
-| `values?market=…[&item=…]&hours=72` | the price model: market value, current min/p10, buy, sell, sold/day; without `item`, every item busiest first (`min_sold`, paged) |
+| `values?market=…[&item=…]&hours=72` | the price model: market value, current min/p10, buy, sell, sold/day, definite sold/day; without `item`, every item busiest first (`min_sold`, paged) |
 | `deals?market=…&max_ratio=0.7&min_sold=1` | listed well below market value and actually selling |
-| `crafts?hours=72` | your craft report (recipes your characters know), per realm |
+| `crafts?hours=72&profession=&min_sold=&priced_only=&limit=&offset=` | your craft report (recipes your characters know), per realm |
 
 `values` and `deals` use API snapshots only (not your in-game scans), over the window ending at
 the market's latest snapshot.

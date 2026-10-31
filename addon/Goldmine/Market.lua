@@ -42,20 +42,23 @@ local function Safe(fn, ...)
     if ok then return a, b, c end
 end
 
--- Remember an item's stack size, binding, expansion and vendor price (what the item API
--- doesn't say), once per item. Skipped while the client hasn't cached the item yet.
+-- Remember an item's name, stack size, binding, expansion and vendor price (what the item API
+-- doesn't say, or says only once the server gets round to asking), once per item. Skipped while
+-- the client hasn't cached the item yet. Entries from before names were kept get one more look.
 local function NoteItem(itemID)
     local db = ns.db
     if not (db and itemID) then return end
     db.itemInfo = db.itemInfo or {}
-    if db.itemInfo[itemID] then return end
+    local known = db.itemInfo[itemID]
+    if known and known.n then return end
     db.itemInfoCount = db.itemInfoCount or 0
-    if db.itemInfoCount >= MAX_ITEM_INFO then return end
+    if not known and db.itemInfoCount >= MAX_ITEM_INFO then return end
     local get = (C_Item and C_Item.GetItemInfo) or GetItemInfo
     local ok, name, _, _, _, _, _, _, stack, _, _, sell, class, subclass, bind, expansion = pcall(get, itemID)
     if not (ok and name) then return end
-    db.itemInfo[itemID] = { s = stack, v = sell, c = class, sc = subclass, b = bind, x = expansion, t = time() }
-    db.itemInfoCount = db.itemInfoCount + 1
+    db.itemInfo[itemID] = { n = name, s = stack, v = sell, c = class, sc = subclass, b = bind, x = expansion,
+                            t = time() }
+    if not known then db.itemInfoCount = db.itemInfoCount + 1 end
 end
 
 -- Run fn once, `delay` seconds after the last call with this key.
@@ -178,6 +181,16 @@ local function Concentration()
     return { q = info.quantity, max = info.maxQuantity, t = time() }
 end
 
+-- A recipe's cooldown: cd = base seconds (the recipe is a spell), cdd = resets daily,
+-- cdr = when a running one ends. A ready daily cooldown may report neither; verify in game.
+local function Cooldown(recipeID, out)
+    local base = Safe((C_Spell and C_Spell.GetSpellBaseCooldown) or GetSpellBaseCooldown, recipeID)
+    if type(base) == "number" and base > 0 then out.cd = math.floor(base / 1000) end
+    local left, isDay = Safe(C_TradeSkillUI.GetRecipeCooldown, recipeID)
+    if isDay then out.cdd = true end
+    if type(left) == "number" and left > 0 then out.cdr = time() + math.floor(left) end
+end
+
 local function ScanRecipes()
     local ui = C_TradeSkillUI
     if not (ui and ns.char) then return end
@@ -209,6 +222,9 @@ local function ScanRecipes()
                 q = ((schematic.quantityMin or 1) + (schematic.quantityMax or schematic.quantityMin or 1)) / 2,
                 r = reagents,
             }
+            Cooldown(recipeID, recipes[recipeID])
+            NoteItem(schematic.outputItemID)
+            for i = 1, #reagents, 2 do NoteItem(reagents[i]) end
             if ops < MAX_OPS then
                 recipes[recipeID].op = OperationInfo(recipeID)
                 if recipes[recipeID].op then ops = ops + 1 end

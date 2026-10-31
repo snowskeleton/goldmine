@@ -116,7 +116,9 @@ def crafts_data(args) -> dict:
     conn = ledger.db_for(args)
     exports = [ex for ex in ledger.set_reports(conn, args) if ex.crafts]
     out = {"kind": "crafts", "sections": [],
-           "note": "Sells for = min(market value, current lowest) after the 5% AH cut; cost uses current p10 prices.",
+           "note": f"Sells for = min(market value, current lowest) after the 5% AH cut, blank when the output isn't "
+                   f"listed now. Cost = reagents at what buying {pricing.CRAFT_BATCH} crafts' worth costs now. "
+                   "bought/day counts definite sales only. cd = the recipe has a cooldown.",
            "empty": None if exports else "No recipes yet. Open each profession window in game, then /reload and sync."}
     for ex in exports:
         crafts = ex.crafts[:args.limit]
@@ -124,6 +126,8 @@ def crafts_data(args) -> dict:
         rows = [{"recipe_id": c.recipe_id, "name": c.name or names[c.output_item], "profession": c.profession,
                  "item_id": c.output_item, "output_qty": c.output_qty, "cost": c.cost, "revenue": c.revenue,
                  "profit": c.profit, "sold_per_day": round(c.sold_per_day, 2),
+                 "definite_sold_per_day": round(c.bought_per_day, 2), "listed": c.listed,
+                 "cooldown": c.cooldown, "other_ranks": c.ranks,
                  "crafters": [first_name(k) for k in c.crafters],
                  "missing": [{"item_id": m, "name": names[m]} for m in c.missing]} for c in crafts]
         out["sections"].append(set_info(ex.set) | {"rows": rows})
@@ -138,9 +142,12 @@ def crafts_text(data: dict) -> str:
         rows = []
         for r in s["rows"]:
             missing = f"(no price: {', '.join(m['name'] for m in r['missing'][:3])})" if r["missing"] else ""
+            if not r["listed"]:
+                missing = ("not listed now " + missing).strip()
             rows.append([short(r["name"]), gold(r["cost"]), gold(r["revenue"]), gold(r["profit"], True),
-                         f"{r['sold_per_day']:.1f}", ", ".join(r["crafters"]), missing])
-        lines += [section_title(s)] + table(["recipe", "cost", "sells for", "profit", "sold/day", "crafters", ""],
+                         f"{r['definite_sold_per_day']:.1f}", "cd" if r["cooldown"] else "",
+                         ", ".join(r["crafters"]), missing])
+        lines += [section_title(s)] + table(["recipe", "cost", "sells for", "profit", "bought/day", "", "crafters", ""],
                                             rows, right={1, 2, 3, 4}) + [""]
     return "\n".join(lines + [data["note"]]) + "\n"
 

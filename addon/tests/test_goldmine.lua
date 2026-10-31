@@ -321,6 +321,7 @@ C_TradeSkillUI = {
                  bonusStats = { { bonusStatName = "Multicraft", bonusStatValue = 120, ratingPct = 12.5 },
                                 { bonusStatName = "Resourcefulness", bonusStatValue = 90, ratingPct = 9 } } }
     end,
+    GetRecipeCooldown = function(id) if id == 100 then return 3600, true end end,
     GetProfessionChildSkillLineID = function() return 2915 end,
     GetConcentrationCurrencyID = function() return 3040 end,
     CraftRecipe = function() end,
@@ -337,6 +338,8 @@ local op = tailoring.recipes[100].op
 expect("operation info recorded", op and op.sk == 80 and op.df == 100 and op.ql == 2 and op.cc == 30
     and op.stats.Multicraft == 12.5 and op.stats.Resourcefulness == 9)
 expect("concentration recorded", tailoring.conc and tailoring.conc.q == 640 and tailoring.conc.max == 1000)
+expect("cooldown recorded", tailoring.recipes[100].cdd == true and tailoring.recipes[100].cdr >= time() + 3599
+    and tailoring.recipes[100].cd == nil)
 
 -- A craft: the recipe comes from the hooked CraftRecipe call when the result doesn't carry it.
 C_TradeSkillUI.CraftRecipe(100, 1)
@@ -413,7 +416,7 @@ expect("warband gold follows deposits", GoldmineDB.warbandMoney.m == 2000000)
 fire("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 8)
 local ii = GoldmineDB.itemInfo
 expect("item info noted once per item", ii[2589].s == 200 and ii[2589].v == 10 and ii[2589].c == 7
-    and ii[2592] == nil and ii[4306] ~= nil)
+    and ii[2589].n == "Item 2589" and ii[2592] == nil and ii[4306] ~= nil)
 local calls = itemInfoCalls
 fire("BAG_UPDATE_DELAYED")
 advance(3)

@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     name         TEXT,
     output_item  INTEGER,
     output_qty   REAL,
+    cooldown     INTEGER,           -- seconds between crafts (NULL = none seen)
+    ready_at     INTEGER,           -- unix seconds the cooldown was due to end, when it was running
     PRIMARY KEY (char_key, recipe_id)
 );
 CREATE TABLE IF NOT EXISTS recipe_reagents (
@@ -219,7 +221,8 @@ CREATE TABLE IF NOT EXISTS item_meta (    -- from the game client's GetItemInfo
     subclass_id  INTEGER,
     bind_type    INTEGER,                 -- Enum.ItemBind: 0 none, 1 on pickup, 2 on equip, 3 on use, ...
     expansion    INTEGER,                 -- 0 classic ... 10 The War Within, 11 Midnight
-    updated      INTEGER
+    updated      INTEGER,
+    name         TEXT
 );
 DROP VIEW IF EXISTS transactions_view;
 CREATE VIEW transactions_view AS
@@ -239,6 +242,8 @@ MIGRATIONS = {
     "characters": [("region", "TEXT")],
     "transactions": [("item_id", "INTEGER"), ("item_name", "TEXT")],
     "craft_results": [("reagents", "TEXT"), ("reagents_estimated", "INTEGER"), ("order_id", "INTEGER")],
+    "recipes": [("cooldown", "INTEGER"), ("ready_at", "INTEGER")],
+    "item_meta": [("name", "TEXT")],
 }
 
 _ITEM_ID = re.compile(r"\|Hitem:(\d+)")
@@ -368,8 +373,9 @@ def import_market_data(conn: sqlite3.Connection, data: dict, chars: dict) -> Non
                              (key, key, prof))
             conn.execute("DELETE FROM recipes WHERE char_key = ? AND profession = ?", (key, prof))
             for rid, r in recipes.items():
-                conn.execute("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?, ?, ?)",
-                             (key, int(rid), prof, r.get("n"), r.get("o"), r.get("q")))
+                cd = r.get("cd") or (86400 if r.get("cdd") else None)
+                conn.execute("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             (key, int(rid), prof, r.get("n"), r.get("o"), r.get("q"), cd, r.get("cdr")))
                 conn.executemany("INSERT INTO recipe_reagents VALUES (?, ?, ?, ?)",
                                  [(key, int(rid), item, qty) for item, qty in _pairs(r.get("r"), 2)])
                 if isinstance(r.get("op"), dict):
@@ -447,9 +453,9 @@ def import_market_data(conn: sqlite3.Connection, data: dict, chars: dict) -> Non
                           for x in b.get("list") or [] if isinstance(x, dict)])
     for item_id, m in _as_dict(data.get("itemInfo")).items():
         if isinstance(m, dict):
-            conn.execute("INSERT OR REPLACE INTO item_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            conn.execute("INSERT OR REPLACE INTO item_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (int(item_id), m.get("s"), m.get("v"), m.get("c"), m.get("sc"), m.get("b"), m.get("x"),
-                          m.get("t")))
+                          m.get("t"), m.get("n")))
 
 
 def _import_op(conn, key: str, recipe_id: int, op: dict, updated) -> None:
@@ -592,6 +598,8 @@ def item_names(conn, ids, args=None, cfg=None, client=None) -> dict[int, str]:
     known.update((i, n) for i, n in conn.execute(
         "SELECT item_id, item_name FROM transactions WHERE item_id IS NOT NULL AND item_name IS NOT NULL")
         if i not in known)
+    known.update((i, n) for i, n in conn.execute("SELECT item_id, name FROM item_meta WHERE name IS NOT NULL")
+                 if not known.get(i))
     missing = [i for i in ids if i not in known]
     if missing and args is not None:
         try:

@@ -293,8 +293,10 @@ TOOLS = [
            "offset": {"type": "integer", "minimum": 0, "default": 0}},
           ["market", "item"], lambda conn, market, item, **kw: md.price_history(conn, market, item, **kw)),
     _tool("get_market_values", "Market values",
-          "Goldmine's price model for a market: market_value (time-weighted p10 over the window), current_min, "
-          "current_p10, buy, sell, sold_per_day. With items: just those; without: every item, busiest first.",
+          "Goldmine's price model for a market: market_value (time-weighted median of p10 over the window), "
+          "current_min, current_p10, buy, sell, sold_per_day (units that left early: sold or cancelled, an upper "
+          "bound) and definite_sold_per_day (bought out of listings still up). With items: just those; without: "
+          "every item, busiest first.",
           {"market": _market, "items": _items, "hours": _hours,
            "min_sold": {"type": "number", "minimum": 0, "default": 0, "description": "Only items selling this many/day"},
            "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 50},
@@ -312,9 +314,21 @@ TOOLS = [
            "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 40}},
           ["market"], lambda conn, market, **kw: md.deals(conn, market, **kw)),
     _tool("get_crafts", "Craft report",
-          "Profit per craft for recipes the key owner's characters know, per realm: cost at current p10, "
-          "revenue at min(market value, lowest listing) after the AH cut, and sold/day.",
-          {"hours": _hours, "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 40}},
+          "Profit per craft for recipes the key owner's characters know, per realm, most profitable first. "
+          "cost: reagents at what buying a batch (batch crafts' worth) costs now, walking up from the cheapest "
+          "listing. revenue: min(market value, lowest listing) after the AH cut; null when the output isn't "
+          "listed now (listed=false), since there is nothing to price it against. sold_per_day counts units "
+          "that left the AH early (sold or cancelled, an upper bound); definite_sold_per_day only units "
+          "bought out of listings still up. Ranks of one recipe show once (other_ranks); cooldown is seconds "
+          "between crafts and ready_at when a running cooldown ends. Filter with profession, min_sold "
+          "(definite sales/day) and priced_only; page with offset.",
+          {"hours": _hours, "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_CRAFTS, "default": 40},
+           "offset": {"type": "integer", "minimum": 0, "default": 0},
+           "profession": {"type": "string", "description": "Only this profession, e.g. Alchemy"},
+           "min_sold": {"type": "number", "minimum": 0, "default": 0,
+                        "description": "Only outputs with at least this many definite sales per day"},
+           "priced_only": {"type": "boolean", "default": False,
+                           "description": "Skip crafts with no profit figure (unlisted output or unpriced reagents)"}},
           [], lambda conn, **kw: md.crafts(conn, **kw), user_db=True),
     *TASK_TOOLS,
     *LEARNING_TOOLS,

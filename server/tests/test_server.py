@@ -270,6 +270,12 @@ class ServerFlow(unittest.TestCase):
         rows = api.get("/api/v1/report/crafts?format=json", headers=h).json()["sections"][0]["rows"]
         self.assertIn("Bolt of Linen Cloth", [r["name"] for r in rows])
         self.assertIn("crafters", rows[0])
+        mc = api.get("/api/v1/market/crafts?profession=tailoring", headers=h).json()
+        [craft] = mc["sets"][0]["crafts"]
+        self.assertEqual((craft["name"], craft["listed"], mc["sets"][0]["professions"]),
+                         ("Bolt of Linen Cloth", True, ["Tailoring"]))
+        self.assertIn("definite_sold_per_day", craft)
+        self.assertEqual(api.get("/api/v1/market/crafts?profession=Alchemy", headers=h).json()["sets"], [])
         page = self.admin.get("/reports?kind=crafts").text
         self.assertIn('<table class="sortable">', page)
         self.assertIn("/reports?kind=price&amp;item=", page)

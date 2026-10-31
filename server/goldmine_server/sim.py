@@ -42,7 +42,7 @@ Fill model, deliberately conservative (each assumption errs toward fewer fills a
                per day over the whole history window (a mild look-ahead in which items exist;
                every signal and fill uses only data up to its own time).
 
-History is loaded once per call (item_states rows plus prefix sums for time-weighted p10 and
+History is loaded once per call (item_states rows plus prefix sums for
 moved/sold volumes), so a 30-day backtest doesn't re-query per step.
 """
 
@@ -106,41 +106,30 @@ def trader_markets(conn, realms=None) -> list[str]:
 
 class Series:
     """One item in one market: its state rows (a row holds until the next one) and prefix sums."""
-    __slots__ = ("t", "mn", "p10", "qty", "cum_sold", "cum_moved", "cum_pw", "cum_w")
+    __slots__ = ("t", "mn", "p10", "qty", "cum_sold", "cum_moved")
 
     def __init__(self, rows):  # rows: (t, min_price, p10, quantity, sold, gone), sorted by t
         self.t = [r[0] for r in rows]
         self.mn = [r[1] for r in rows]
         self.p10 = [r[2] for r in rows]
         self.qty = [r[3] for r in rows]
-        self.cum_sold, self.cum_moved, self.cum_pw, self.cum_w = [0], [0], [0.0], [0.0]
-        for i, (t, _, p10, qty, sold, gone) in enumerate(rows):
+        self.cum_sold, self.cum_moved = [0], [0]
+        for *_, sold, gone in rows:
             self.cum_sold.append(self.cum_sold[-1] + sold)
             self.cum_moved.append(self.cum_moved[-1] + sold + gone)
-            if i + 1 < len(rows):
-                dt = rows[i + 1][0] - t
-                ok = p10 is not None and qty > 0
-                self.cum_pw.append(self.cum_pw[-1] + (p10 * dt if ok else 0))
-                self.cum_w.append(self.cum_w[-1] + (dt if ok else 0))
 
     def _row(self, at: float) -> int:
         return bisect.bisect_right(self.t, at) - 1
 
-    def _integral(self, x: float) -> tuple[float, float]:
-        j = self._row(x)
-        if j < 0:
-            return 0.0, 0.0
-        pw, w = self.cum_pw[j], self.cum_w[j]
-        if self.p10[j] is not None and self.qty[j] > 0:
-            pw += self.p10[j] * (x - self.t[j])
-            w += x - self.t[j]
-        return pw, w
-
     def twa_p10(self, a: float, b: float) -> int | None:
-        """Time-weighted p10 over [a, b] while listed (pricing's market value)."""
-        pa, wa = self._integral(a)
-        pb, wb = self._integral(b)
-        return int((pb - pa) / (wb - wa)) if wb > wa else None
+        """Time-weighted median p10 over [a, b] while listed (pricing's market value)."""
+        j, spans = max(self._row(a), 0), []
+        while j < len(self.t) and self.t[j] < b:
+            lo, hi = max(self.t[j], a), min(self.t[j + 1] if j + 1 < len(self.t) else b, b)
+            if hi > lo and self.p10[j] is not None and self.qty[j] > 0:
+                spans.append((self.p10[j], hi - lo))
+            j += 1
+        return pricing.weighted_median(spans)
 
     def sold(self, a: float, b: float) -> int:
         """Definite purchases recorded by snapshots in (a, b]."""
