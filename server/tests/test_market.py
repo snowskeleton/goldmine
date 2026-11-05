@@ -192,18 +192,19 @@ class CollectTests(unittest.TestCase):
         logs = []
         market.probe_unpublished(self.conn, client, {"us"}, now=t0, log=logs.append)
         self.assertEqual(self.conn.execute("SELECT namespace, ok FROM api_probes ORDER BY 1").fetchall(),
-                         [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0)])
+                         [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0), ("dynamic-forever-us", 0)])
         self.assertEqual(logs, [])
         client.responses["/data/wow/connected-realm/5085/auctions/2"] = [({"auctions": [{"id": 1}]}, None)]
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 3600, log=logs.append)
         self.assertEqual(logs, [])  # checked at most once a day
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 86400, log=logs.append)
-        self.assertEqual(len(logs), 2)
+        self.assertEqual(len(logs), 3)
         self.assertIn("Classic Era (us): Blizzard now serves auction house data (1 listings", logs[0])
         games = {g["game"]: g["auctions"] for g in market.namespace_games(self.conn)}
-        self.assertEqual(games, {"retail": True, "classic": True, "classic1x": True, "classicann": True})
+        self.assertEqual(games, {"retail": True, "classic": True, "classic1x": True, "classicann": True,
+                                 "forever": True})
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 2 * 86400, log=logs.append)
-        self.assertEqual(len(logs), 2)  # still fine: nothing new to say
+        self.assertEqual(len(logs), 3)  # still fine: nothing new to say
 
     def test_fetch_item_info(self):
         client = FakeClient({

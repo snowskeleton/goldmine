@@ -264,13 +264,14 @@ and time axis so they compare at a glance. The size effect is re-fitted from the
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is
 empty). Era (`classic1x`) and Anniversary (`classicann`) list auction houses but every auction
-path returns 404, so their AH data isn't published. The collector checks one of their auction
-houses once a day and says so on the dashboard (and unlocks them on the Markets page) once
-Blizzard serves the listings. Markets for a different game version
-should get `pricing = false` so overlapping item ids don't mix into your prices.
+path returns 404, so their AH data isn't published. **Forever (Nov 2026)** is `static-forever-*`
+/ `dynamic-forever-*`: game data is served (build 1.60.1), but the dynamic namespace has no
+realms yet. The collector checks one auction house of each of these once a day and says so on
+the dashboard (and unlocks them on the Markets page) once Blizzard serves the listings. Markets
+for a different game version should get `pricing = false` so overlapping item ids don't mix into your prices.
 
 **Launch day:** on the server, run `python -m goldmine_server.cli probe us` to see which API
-namespaces exist (it tries likely Forever names) and `python -m goldmine_server.cli realms us
+namespaces exist (Forever's is `dynamic-forever-us`) and `python -m goldmine_server.cli realms us
 <namespace>` to list realms, then add a market on the Markets page. (In Docker, prefix with
 `docker compose -f server/docker-compose.yml exec goldmine`.) Until the API serves Forever,
 browsing the AH in game is the price source.

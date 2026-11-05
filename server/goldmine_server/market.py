@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS markets (
     kind                TEXT NOT NULL,
     connected_realm_id  INTEGER,
     auction_house_id    INTEGER,
-    game                TEXT,               -- retail | classic | classic1x | classicann | ...
+    game                TEXT,               -- retail | classic | classic1x | classicann | forever | ...
     realms              TEXT,               -- JSON list of realm names this AH serves
     source              TEXT,               -- the all-realms config entry it came from; NULL = its own entry
     mid                 INTEGER UNIQUE      -- compact id used by the storage tables
@@ -221,6 +221,7 @@ NAMESPACE_GAMES = [
     {"game": "classic", "label": "Mists Classic", "prefix": "dynamic-classic", "auctions": True},
     {"game": "classic1x", "label": "Classic Era", "prefix": "dynamic-classic1x", "auctions": False},
     {"game": "classicann", "label": "Anniversary", "prefix": "dynamic-classicann", "auctions": False},
+    {"game": "forever", "label": "Forever", "prefix": "dynamic-forever", "auctions": False},
 ]
 
 
@@ -231,7 +232,8 @@ def namespace_games(conn) -> list[dict]:
 
 
 # Era and Anniversary list their auction houses but every listings request has returned 404 since
-# early 2026. Check one house a day so the dashboard says when Blizzard fixes it.
+# early 2026; Forever's namespace had no realms at all at launch (Nov 2026). Check one house a day
+# so the dashboard says when Blizzard serves them.
 PROBE_EVERY = 86400
 
 
