@@ -1,4 +1,4 @@
-## Interface: 120105
+## Interface: 120105, 16001
 ## Title: Goldmine
 ## Notes: Records every change to your gold, with its source, for export to a spreadsheet or database.
 ## Author: snow

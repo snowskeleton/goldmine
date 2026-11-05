@@ -91,15 +91,16 @@ changes. Updates are detected by a content hash of the addon's files, so you don
 `## Version:`. `Data.lua` is kept.
 
 For development, symlink it instead so edits here apply in game; a symlinked copy shows as a
-"development link" and is never replaced by updates. The Forever folder name below is a guess;
-use whatever flavor folder sits next to `_retail_`:
+"development link" and is never replaced by updates. Forever's flavor folder is `_forever_`:
 
 ```bash
 ln -s /Users/snow/bin/goldmine/addon/Goldmine "/Applications/World of Warcraft/_forever_/Interface/AddOns/Goldmine"
 ```
 
-If the addon shows as "out of date", bump `## Interface:` in `Goldmine.toc` to match the
-client (`/dump select(4, GetBuildInfo())` in game).
+`Goldmine.toc` lists one `## Interface:` number per client (retail `120105`, Forever `16001`,
+from Forever's 1.60.1 build). If the addon shows as "out of date" after a patch, update that
+client's number (`/dump select(4, GetBuildInfo())` in game, or the `Version` column for that
+product in the install's `.build.info`: `1.60.1` -> `16001`).
 
 ### In-game commands
 
@@ -297,7 +298,6 @@ cd server && .venv/bin/python -m unittest discover -s tests   # server: import, 
 The tests run against a mock, so these need checking in the real client
 (`/goldmine debug` makes it easy):
 
-- `## Interface:` number for Forever.
 - Which `Enum.PlayerInteractionType` values exist, and whether the hooked functions
   (`SendMail`, `TakeTaxiNode`, `C_AuctionHouse.*`, `C_Bank.*`) exist. Missing ones are
   skipped safely; they just fall back to window-based labels.
