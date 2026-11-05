@@ -195,8 +195,9 @@ can write (e.g. `~/Applications`) to update itself.
 Each market has a `game` (derived from its namespace: `retail`, `classic` for Mists, ...;
 override with `game = "..."`) and knows which realms it serves. `push` writes one price set per
 realm you have characters on, plus one commodity set per game; in game, the addon uses the
-set for the realm you're logged into. Retail and Classic prices never mix, even though they
-share item ids. In-game scans are attributed the same way, through the character that ran them.
+set for the realm you're logged into, and only sets of the client's own game (Forever is
+recognised by its 16xxx interface number). A client with no data for its game shows no prices,
+never another game's. Retail and Classic prices never mix, even though they share item ids. In-game scans are attributed the same way, through the character that ran them.
 
 **Storage: changes, not snapshots** (`server/goldmine_server/store.py`). Nothing is ever condensed or deleted:
 - `auctions`: one row per listing for its whole life (first seen, price, quantity at start and
@@ -299,6 +300,8 @@ cd server && .venv/bin/python -m unittest discover -s tests   # server: import, 
 The tests run against a mock, so these need checking in the real client
 (`/goldmine debug` makes it easy):
 
+- Forever: `WOW_PROJECT_ID`, and that its tooltips show no Goldmine prices until Forever
+  markets exist.
 - Which `Enum.PlayerInteractionType` values exist, and whether the hooked functions
   (`SendMail`, `TakeTaxiNode`, `C_AuctionHouse.*`, `C_Bank.*`) exist. Missing ones are
   skipped safely; they just fall back to window-based labels.

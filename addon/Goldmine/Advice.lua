@@ -15,14 +15,19 @@ local function Norm(name)
     return ((name or ""):lower():gsub("[^%w]", ""))
 end
 
--- Fallback when the current realm isn't a configured market: guess the game from the client.
+-- The game this client is, so a realm or commodity set from another game is never used.
+-- Forever (interface 1.60.x = 16xxx) is checked by build first: its WOW_PROJECT_ID may well
+-- read as mainline, and retail prices must never show there.
 local function ClientGame()
+    local build = GetBuildInfo and select(4, GetBuildInfo())
+    if build and build >= 16000 and build < 20000 then return "forever" end
     local id = WOW_PROJECT_ID
     if not id then return nil end
     if id == WOW_PROJECT_MAINLINE then return "retail" end
     if WOW_PROJECT_CLASSIC and id == WOW_PROJECT_CLASSIC then return "classic1x" end
     if WOW_PROJECT_BURNING_CRUSADE_CLASSIC and id == WOW_PROJECT_BURNING_CRUSADE_CLASSIC then return "classicann" end
     if WOW_PROJECT_MISTS_CLASSIC and id == WOW_PROJECT_MISTS_CLASSIC then return "classic" end
+    return "unknown"
 end
 
 local function ChooseSets()
@@ -30,16 +35,19 @@ local function ChooseSets()
     chosen = true
     local sets = (Goldmine_Data and Goldmine_Data.sets) or {}
     local realm = Norm(GetRealmName and GetRealmName())
+    local client = ClientGame()
     for _, set in ipairs(sets) do
-        if set.kind == "realm" then
+        if set.kind == "realm" and (client == nil or set.game == client) then
             for _, r in ipairs(set.realms or {}) do
                 if Norm(r) == realm then realmSet = set end
             end
         end
     end
-    local game = (realmSet and realmSet.game) or ClientGame()
+    -- No game known (no realm match, unrecognised client): show nothing rather than guess.
+    local game = (realmSet and realmSet.game) or client
+    if not game then return end
     for _, set in ipairs(sets) do
-        if set.kind == "commodities" and (game == nil or set.game == game) then
+        if set.kind == "commodities" and set.game == game then
             commoditySet = set
             break
         end

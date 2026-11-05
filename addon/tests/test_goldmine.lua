@@ -578,6 +578,27 @@ ns.ResetSets()
 lines = {}
 tooltipHook(tooltip, { id = 2589 })
 expect("fallback picks Mists commodities in a Mists client", #lines == 2 and lines[1]:find("2") ~= nil, lines[1])
+-- Forever (interface 16xxx) only ever has Forever sets: no retail prices, even on a realm whose
+-- name matches a retail market, and even if the client reports itself as mainline.
+WOW_PROJECT_ID = 1
+local savedBuildInfo = GetBuildInfo
+GetBuildInfo = function() return "1.60.1", "1", "Nov 1 2026", 16001 end
+for _, realmName in ipairs({ "Somewhere Else", "Testrealm" }) do
+    GetRealmName = function() return realmName end
+    ns.ResetSets()
+    lines = {}
+    tooltipHook(tooltip, { id = 2589 })
+    tooltipHook(tooltip, { id = 2996 })
+    expect("no retail prices in Forever on " .. realmName, #lines == 0, lines[1])
+end
+GetBuildInfo = savedBuildInfo
+-- Unknown game and no matching realm: nothing, rather than the first commodity set.
+WOW_PROJECT_ID = nil
+GetRealmName = function() return "Somewhere Else" end
+ns.ResetSets()
+lines = {}
+tooltipHook(tooltip, { id = 2589 })
+expect("no guessed commodity prices when the game is unknown", #lines == 0, lines[1])
 GetRealmName = function() return "Testrealm" end
 WOW_PROJECT_ID = nil
 ns.ResetSets()
