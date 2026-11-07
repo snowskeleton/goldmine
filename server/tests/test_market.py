@@ -146,6 +146,61 @@ class CollectTests(unittest.TestCase):
         searches = [c for c in client.calls if c[2] == "/data/wow/search/connected-realm"]
         self.assertEqual(len(searches), 1)  # the realm list is reused between runs
 
+    def test_forever_houses(self):
+        """Forever: every house of the namespace, once, through one ruleset; a house's auctions and
+        commodities are one market; characters find their house through their own AH scans."""
+        from goldmine_server import pricing
+        t0 = int(time.time()) - 600
+        market._house_lists.clear()
+        base = "/data/wow/ruleset/1/auctions/"
+        houses = {113: "Horde Auction House", 114: "Horde Auction House", 110: "Alliance Auction House"}
+        responses = {
+            "/data/wow/ruleset/index": [({"rulesets": [{"id": 2}, {"id": 1}, {"id": 15}]}, None)],
+            base: [({"auctions": [{"id": h, "name": n} for h, n in houses.items()]}, None)],
+        }
+        for h in houses:  # house 113 sells item 20 at 500, 114 at 700; both have 30 to 100 as commodities
+            responses[f"{base}{h}"] = [({"id": h, "auctions": [realm_auction(h * 10, 20, 1, buyout=500 if h == 113 else 700)],
+                                         "commodities": {"href": "x"}}, t0)]
+            responses[f"{base}{h}/commodities"] = [({"auctions": [commodity(h * 100 + i, 30 + i, 5, 100 + h * i)
+                                                                  for i in range(6)]}, t0)]
+        client = FakeClient(responses)
+        every = {"name": "us-forever-all-realms", "region": "us", "namespace": "dynamic-forever-us", "kind": "all-realms"}
+        market.collect(self.conn, client, {"market": [every]}, log=lambda _: None)
+        rows = {r[0]: r[1:] for r in self.conn.execute(
+            "SELECT name, kind, auction_house_id, connected_realm_id, game, source FROM markets")}
+        self.assertEqual(rows["us-forever-horde-113"], ("classic", 113, None, "forever", "us-forever-all-realms"))
+        self.assertEqual(set(rows), {"us-forever-horde-113", "us-forever-horde-114", "us-forever-alliance-110"})
+        self.assertEqual(self.conn.execute("SELECT auctions FROM snapshots WHERE market = 'us-forever-horde-113'")
+                         .fetchone()[0], 7)  # 1 auction + 6 commodity listings
+        self.assertFalse([c for c in client.calls if "/ruleset/2/" in c[2] or "/ruleset/15/" in c[2]])
+
+        logs = []
+        market.collect(self.conn, client, {"market": [every]}, log=logs.append)
+        self.assertIn("us-forever-horde-113: unchanged", logs)
+        # Only the commodities changed: the house is stored whole again, so its auction isn't ended.
+        responses[f"{base}113/commodities"] = [({"auctions": [commodity(11399, 30, 4, 100)]}, t0 + 3600)]
+        market.collect(self.conn, client, {"market": [every]}, log=lambda _: None)
+        mid = self.conn.execute("SELECT mid FROM markets WHERE name = 'us-forever-horde-113'").fetchone()[0]
+        self.assertEqual(self.conn.execute("SELECT auction_id FROM auctions WHERE market_id = ? AND ended_snap IS NULL "
+                                           "ORDER BY 1", (mid,)).fetchall(), [(1130,), (11399,)])
+
+        # Dulator (Horde) scanned 114's prices; Ally (Alliance) scanned nothing; Thin has one row.
+        self.conn.executemany("INSERT INTO characters (key, name, realm, region, faction) VALUES (?, ?, ?, 'US', ?)",
+                              [("Dulator-Realm7PvE", "Dulator", "Realm7PvE", "Horde"),
+                               ("Ally-Realm7PvE", "Ally", "Realm7PvE", "Alliance"),
+                               ("Thin-Realm2PvP", "Thin", "Realm2PvP", "Horde")])
+        self.conn.execute("INSERT INTO scans VALUES ('Dulator-Realm7PvE:s1', 'Dulator-Realm7PvE', ?, 'commodity')", (t0,))
+        self.conn.executemany("INSERT INTO scan_rows (scan_id, item_id, unit_price, quantity) VALUES "
+                              "('Dulator-Realm7PvE:s1', ?, ?, 5)", [(30 + i, 100 + 114 * i) for i in range(6)])
+        self.conn.execute("INSERT INTO scans VALUES ('Thin-Realm2PvP:s1', 'Thin-Realm2PvP', ?, 'item')", (t0,))
+        self.conn.execute("INSERT INTO scan_rows (scan_id, item_id, unit_price, quantity) VALUES ('Thin-Realm2PvP:s1', 20, 500, 1)")
+        sets = {st.name: st for st in pricing.build_sets(self.conn, {})}
+        self.assertEqual((sets["us-forever-horde-114"].chars, sets["us-forever-horde-114"].realms,
+                          sets["us-forever-horde-114"].faction, sets["us-forever-horde-114"].game),
+                         (["Dulator-Realm7PvE"], ["Realm7PvE"], "horde", "forever"))
+        self.assertEqual(sets["us-forever-horde-113"].chars, [])  # Thin's one row isn't enough
+        self.assertEqual(sets["us-forever-alliance-110"].chars, [])
+
     def test_collect_downloads_in_parallel(self):
         import threading
         t0 = 1_790_000_000
@@ -192,23 +247,22 @@ class CollectTests(unittest.TestCase):
         logs = []
         market.probe_unpublished(self.conn, client, {"us"}, now=t0, log=logs.append)
         self.assertEqual(self.conn.execute("SELECT namespace, ok FROM api_probes ORDER BY 1").fetchall(),
-                         [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0), ("dynamic-forever-us", 0)])
+                         [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0)])
         self.assertEqual(logs, [])
         client.responses["/data/wow/connected-realm/5085/auctions/2"] = [({"auctions": [{"id": 1}]}, None)]
         self.assertEqual(market.served_games(self.conn), [])
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 1200, log=logs.append)
         self.assertEqual(logs, [])  # checked about once an hour, not every collection run
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 3600, log=logs.append)
-        self.assertEqual(len(logs), 3)
+        self.assertEqual(len(logs), 2)
         self.assertEqual(market.served_games(self.conn), [{"game": "classic1x", "region": "us"},
-                                                          {"game": "classicann", "region": "us"},
-                                                          {"game": "forever", "region": "us"}])
+                                                          {"game": "classicann", "region": "us"}])
         self.assertIn("Classic Era (us): Blizzard now serves auction house data (1 listings", logs[0])
         games = {g["game"]: g["auctions"] for g in market.namespace_games(self.conn)}
         self.assertEqual(games, {"retail": True, "classic": True, "classic1x": True, "classicann": True,
                                  "forever": True})
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 2 * 86400, log=logs.append)
-        self.assertEqual(len(logs), 3)  # still fine: nothing new to say
+        self.assertEqual(len(logs), 2)  # still fine: nothing new to say
 
     def test_fetch_item_info(self):
         client = FakeClient({

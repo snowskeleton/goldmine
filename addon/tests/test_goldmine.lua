@@ -635,6 +635,18 @@ GetRealmName = function() return "Testrealm" end
 ns.ResetSets()
 expect("no AH notice once the realm has a market", ns.LiveNotice() == nil)
 Goldmine_Data.sets[5], Goldmine_Data.ah_live = nil, nil
+-- Forever houses: one realm name, a house per faction; the player's faction picks (we're Alliance).
+Goldmine_Data.sets[5] = { kind = "realm", game = "forever", region = "us", name = "us-forever-horde-113",
+    faction = "horde", realms = { "Testrealm" }, prices = { [2996] = { 70000, 70000, 1 } }, crafts = {}, deals = {} }
+Goldmine_Data.sets[6] = { kind = "realm", game = "forever", region = "us", name = "us-forever-alliance-110",
+    faction = "alliance", realms = { "Testrealm" }, prices = { [2996] = { 50000, 50000, 1 } }, crafts = {}, deals = {} }
+Goldmine_Data.sets[7] = { kind = "realm", game = "forever", region = "us", name = "us-forever-horde-114",
+    faction = "horde", realms = { "Testrealm" }, prices = { [2996] = { 90000, 90000, 1 } }, crafts = {}, deals = {} }
+ns.ResetSets()
+lines = {}
+tooltipHook(tooltip, { id = 2996 })
+expect("Forever price from this faction's house", #lines >= 1 and lines[1]:find("=5|", 1, true) ~= nil, lines[1])
+Goldmine_Data.sets[5], Goldmine_Data.sets[6], Goldmine_Data.sets[7] = nil, nil, nil
 GetBuildInfo = savedBuildInfo
 -- Unknown game and no matching realm: nothing, rather than the first commodity set.
 WOW_PROJECT_ID = nil

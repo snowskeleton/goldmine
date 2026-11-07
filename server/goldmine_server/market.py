@@ -7,6 +7,10 @@ Response shapes handled:
   retail commodities  {"auctions": [{"id", "item": {"id"}, "quantity", "unit_price", "time_left"}]}
   retail realm        {"auctions": [{"id", "item": {"id", "pet_species_id"?...}, "buyout"?, "bid"?, "quantity", "time_left"}]}
   classic             same as retail realm, per auction house (/auctions/{houseId})
+  forever             no realms: /data/wow/ruleset/{id}/auctions/ (trailing slash) lists 15 houses,
+                      each with realm-style /auctions/{houseId} and its own .../commodities. Every
+                      ruleset lists the same houses with the same auctions (Nov 2026), so each
+                      house is collected once, both lists stored as one market.
 """
 
 from __future__ import annotations
@@ -222,7 +226,7 @@ NAMESPACE_GAMES = [
     {"game": "classic", "label": "Mists Classic", "prefix": "dynamic-classic", "auctions": True},
     {"game": "classic1x", "label": "Classic Era", "prefix": "dynamic-classic1x", "auctions": False},
     {"game": "classicann", "label": "Anniversary", "prefix": "dynamic-classicann", "auctions": False},
-    {"game": "forever", "label": "Forever", "prefix": "dynamic-forever", "auctions": False},
+    {"game": "forever", "label": "Forever", "prefix": "dynamic-forever", "auctions": True},  # per ruleset
 ]
 
 
@@ -233,8 +237,8 @@ def namespace_games(conn) -> list[dict]:
 
 
 # Era and Anniversary list their auction houses but every listings request has returned 404 since
-# early 2026; Forever's namespace had no realms at all at launch (Nov 2026). Check one house an hour
-# (one collection run) so the dashboard, and the addon, say when Blizzard serves them.
+# early 2026. Check one house an hour (one collection run) so the dashboard, and the addon, say when
+# Blizzard serves them.
 PROBE_EVERY = 3600 - 300  # a run a few minutes early still checks
 
 
@@ -378,6 +382,46 @@ def expand_all_realms(conn, client: Client, entry: dict, taken: set[int], reserv
     return out
 
 
+_house_lists: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def forever_houses(client: Client, region: str, namespace: str) -> tuple[int, list[dict]]:
+    """(a ruleset id to ask through, [{id, name}] of every auction house). Rulesets don't filter
+    anything yet, so one that's up serves for all; re-read as often as realm lists."""
+    hit = _house_lists.get((region, namespace))
+    if hit and time.time() - hit[0] < REALM_LIST_TTL:
+        return hit[1]
+    index, _ = client.get(region, namespace, "/data/wow/ruleset/index")
+    ids = sorted(r["id"] for r in index.get("rulesets", []))
+    if not ids:
+        raise ApiError(f"{namespace}: no rulesets")
+    houses, _ = client.get(region, namespace, f"/data/wow/ruleset/{ids[0]}/auctions/")  # the slash matters
+    out = (ids[0], sorted(({"id": h["id"], "name": h.get("name") or str(h["id"])} for h in houses.get("auctions", [])),
+                          key=lambda h: h["id"]))
+    _house_lists[(region, namespace)] = (time.time(), out)
+    return out
+
+
+def house_faction(name: str | None) -> str:
+    """'Horde Auction House' -> 'horde'; Forever's neutral houses are 'blackwater'."""
+    return ((name or "").split() or ["house"])[0].lower()
+
+
+def expand_forever(conn, client: Client, entry: dict) -> list[dict]:
+    """A Forever all-realms entry -> one target per auction house, named region-forever-faction-id
+    (kept if the house already has a market). Both of a house's lists go into that one market."""
+    region, ns = entry["region"], entry["namespace"]
+    ruleset, houses = forever_houses(client, region, ns)
+    named = {house: name for name, house in conn.execute(
+        "SELECT name, auction_house_id FROM markets WHERE namespace = ? AND auction_house_id IS NOT NULL", (ns,))}
+    base = f"/data/wow/ruleset/{ruleset}/auctions/"
+    return [{"name": named.get(h["id"]) or f"{region}-forever-{house_faction(h['name'])}-{h['id']}",
+             "region": region, "namespace": ns, "kind": "classic", "crid": None, "house": h["id"],
+             "realms": [], "game": entry.get("game"), "source": entry["name"],
+             "paths": [f"{base}{h['id']}", f"{base}{h['id']}/commodities"], "path": f"{base}{h['id']}"}
+            for h in houses]
+
+
 def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
     """Expand config markets into concrete endpoints (classic realms expand per auction house;
     all-realms entries into every connected realm not configured on its own)."""
@@ -385,6 +429,9 @@ def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
 
     def add(m: dict) -> None:
         region, ns, kind = m["region"], m["namespace"], m["kind"]
+        if m.get("paths"):  # a Forever house
+            targets.append(m)
+            return
         if kind == "commodities":
             targets.append({"name": m["name"], "region": region, "namespace": ns, "kind": kind,
                             "path": "/data/wow/auctions/commodities", "crid": None, "house": None,
@@ -416,7 +463,10 @@ def market_targets(conn, client: Client, cfg: dict) -> list[dict]:
         if m["kind"] != "all-realms":
             add(m)
     for m in markets:
-        if m["kind"] == "all-realms":
+        if m["kind"] == "all-realms" and game_for(m["namespace"], m.get("game")) == "forever":
+            for e in expand_forever(conn, client, m):
+                add(e)
+        elif m["kind"] == "all-realms":
             taken = {t["crid"] for t in targets if t["namespace"] == m["namespace"] and t["crid"]}
             for e in expand_all_realms(conn, client, m, taken, {c["name"] for c in markets}):
                 add(e)
@@ -444,7 +494,17 @@ FETCH_WORKERS = 4
 
 def _fetch(client: Client, t: dict, since: int | None):
     try:
-        return client.get(t["region"], t["namespace"], t["path"], if_modified_since=since), None
+        if not t.get("paths"):
+            return client.get(t["region"], t["namespace"], t["path"], if_modified_since=since), None
+        # A Forever house: its auctions and commodities make one snapshot, so if either changed,
+        # both are needed in full.
+        parts = [client.get(t["region"], t["namespace"], p, if_modified_since=since) for p in t["paths"]]
+        if all(d is None for d, _ in parts):
+            return (None, since), None
+        parts = [(d, lm) if d is not None else client.get(t["region"], t["namespace"], p)
+                 for (d, lm), p in zip(parts, t["paths"])]
+        listings = [a for d, _ in parts for a in ((d or {}).get("auctions") or [])]
+        return ({"auctions": listings}, max((lm for _, lm in parts if lm), default=None)), None
     except ApiError as exc:
         return None, exc
 

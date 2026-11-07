@@ -408,17 +408,20 @@ class MarketSet:
     markets: list[str]              # market names (classic houses expand to name:house)
     realms: list[str] = field(default_factory=list)
     chars: list[str] = field(default_factory=list)
+    faction: str | None = None      # a Forever house's faction ('horde'); realm names don't tell them apart
 
 
 def build_sets(conn, cfg: dict) -> list[MarketSet]:
     """Group configured markets into per-realm and per-game commodity sets, with the
     characters (from the ledger) that live on each realm."""
     enabled = {m["name"] for m in cfg.get("market", []) if m.get("pricing", True)} if cfg.get("market") else None
-    rows = conn.execute("SELECT name, region, kind, game, realms, source FROM markets").fetchall()
-    chars = conn.execute("SELECT key, realm, region FROM characters").fetchall()
+    rows = conn.execute("SELECT name, region, kind, game, realms, source, auction_house_id, connected_realm_id "
+                        "FROM markets").fetchall()
+    chars = conn.execute("SELECT key, realm, region, faction FROM characters").fetchall()
+    houses: list[MarketSet] = []
     realm_sets: dict[str, MarketSet] = {}
     commodity_sets: dict[tuple[str, str], MarketSet] = {}
-    for name, region, kind, game, realms, source in rows:
+    for name, region, kind, game, realms, source, house, crid in rows:
         base = name.split(":")[0]
         if kind == "region":
             continue  # region baselines are compared against, not priced from
@@ -429,16 +432,61 @@ def build_sets(conn, cfg: dict) -> list[MarketSet]:
             cs = commodity_sets.setdefault((game, region), MarketSet("commodities", game, region, base, []))
             cs.markets.append(name)
             continue
+        if house and not crid:  # a Forever house: no realms, its players are found from their scans
+            houses.append(MarketSet("realm", game, region, base, [name], faction=base.split("-")[-2]))
+            continue
         rs = realm_sets.setdefault(base, MarketSet("realm", game, region, base, [], json.loads(realms or "[]")))
         rs.markets.append(name)
     for rs in realm_sets.values():
         keys = {norm_realm(r) for r in rs.realms}
-        rs.chars = sorted(k for k, realm, region in chars
+        rs.chars = sorted(k for k, realm, region, _ in chars
                           if norm_realm(realm) in keys and (not region or region.lower() == rs.region.lower()))
+    placed = {c for rs in realm_sets.values() for c in rs.chars}
+    realm_of = {k: realm for k, realm, _, _ in chars}
+    matched = match_houses(conn, houses, [c for c in chars if c[0] not in placed])
+    for rs in houses:
+        members = matched.get(rs.name, [])
+        rs.chars = sorted(members)
+        rs.realms = sorted({realm_of[c] for c in members})
+    for rs in houses:
+        realm_sets[rs.name] = rs
     for (game, region), cs in commodity_sets.items():
         cs.chars = sorted({c for rs in realm_sets.values() if rs.game == game and rs.region == region
                            for c in rs.chars})
     return list(realm_sets.values()) + list(commodity_sets.values())
+
+
+HOUSE_SCAN_DAYS = 14
+HOUSE_MIN_MATCHES = 5   # distinct (item, price) pairs a character's scans share with its house
+
+
+def match_houses(conn, houses: list[MarketSet], chars: list[tuple]) -> dict[str, list[str]]:
+    """Which Forever house each character trades on. Forever has no realms in the API and every
+    ruleset lists all 15 houses, so the house is found from the character's own in-game AH scans:
+    the house of its faction whose listings share the most exact (item, unit price) pairs with
+    them, if clearly ahead of the next. Characters without enough scans get no house yet.
+    -> {house set name: [character keys]}"""
+    out: dict[str, list[str]] = {}
+    if not houses or not chars:
+        return out
+    since = int(time.time()) - HOUSE_SCAN_DAYS * 86400
+    ids = store.market_ids(conn)
+    for key, _, region, faction in chars:
+        cands = [h for h in houses if h.faction == (faction or "").lower()
+                 and (not region or region.lower() == h.region.lower())]
+        mids = {ids[h.markets[0]]: h for h in cands if h.markets[0] in ids}
+        if not mids:
+            continue
+        rows = conn.execute(f"""
+            SELECT a.market_id, COUNT(DISTINCT r.item_id || ':' || r.unit_price)
+            FROM scan_rows r JOIN scans s ON s.id = r.scan_id
+            JOIN auctions a ON a.item_id = r.item_id AND a.unit_price = r.unit_price
+            WHERE s.char_key = ? AND s.ts >= ? AND s.kind IN ('commodity', 'item')
+              AND a.market_id IN ({','.join('?' * len(mids))})
+            GROUP BY a.market_id ORDER BY 2 DESC""", (key, since, *mids)).fetchall()
+        if rows and rows[0][1] >= HOUSE_MIN_MATCHES and (len(rows) == 1 or rows[0][1] >= 2 * rows[1][1]):
+            out.setdefault(mids[rows[0][0]].name, []).append(key)
+    return out
 
 
 def commodity_set_for(sets: list[MarketSet], rs: MarketSet) -> MarketSet | None:
@@ -653,7 +701,7 @@ def write_addon_data(path, exports: list[SetExport], now: int | None = None,
         st = ex.set
         lines.append("    {")
         lines.append(f"      kind = {_lua(st.kind)}, game = {_lua(st.game)}, region = {_lua(st.region)}, "
-                     f"name = {_lua(st.name)},")
+                     f"name = {_lua(st.name)},{f' faction = {_lua(st.faction)},' if st.faction else ''}")
         lines.append("      realms = {" + ", ".join(_lua(r) for r in st.realms) + "},")
         lines.append("      prices = {")
         for (item, variant), p in sorted(ex.prices.items()):

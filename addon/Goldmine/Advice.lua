@@ -36,8 +36,11 @@ local function ChooseSets()
     local sets = (Goldmine_Data and Goldmine_Data.sets) or {}
     local realm = Norm(GetRealmName and GetRealmName())
     local client = ClientGame()
+    -- Forever houses carry a faction: one realm name can play on a Horde and an Alliance house.
+    local faction = ((UnitFactionGroup and UnitFactionGroup("player")) or ""):lower()
     for _, set in ipairs(sets) do
-        if set.kind == "realm" and (client == nil or set.game == client) then
+        if set.kind == "realm" and (client == nil or set.game == client)
+                and (not set.faction or set.faction == faction) then
             for _, r in ipairs(set.realms or {}) do
                 if Norm(r) == realm then realmSet = set end
             end

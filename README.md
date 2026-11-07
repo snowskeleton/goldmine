@@ -267,13 +267,30 @@ and time axis so they compare at a glance. The size effect is re-fitted from the
 **API findings (Oct 2026):** retail (`dynamic-us`) and Mists Classic (`dynamic-classic-us`) both
 serve the retail-style layout (per-realm `/auctions`; Mists' region commodities endpoint is
 empty). Era (`classic1x`) and Anniversary (`classicann`) list auction houses but every auction
-path returns 404, so their AH data isn't published. **Forever (Nov 2026)** is `static-forever-*`
-/ `dynamic-forever-*`: game data is served (build 1.60.1), but the dynamic namespace has no
-realms yet. The collector checks one auction house of each of these once an hour and says so on
-the dashboard (and unlocks them on the Markets page) once Blizzard serves the listings. The
-addon hears about it too (`ah_live` in Data.lua): logging in or `/reload`ing in that game on a realm
-with no market yet puts a raid-warning banner, a sound and a chat line on screen until you add one. Markets
-for a different game version should get `pricing = false` so overlapping item ids don't mix into your prices.
+path returns 404, so their AH data isn't published. The collector checks one auction house of
+each of these once an hour and says so on the dashboard (and unlocks them on the Markets page)
+once Blizzard serves the listings. The addon hears about it too (`ah_live` in Data.lua): logging
+in or `/reload`ing in that game on a realm with no market yet puts a raid-warning banner, a sound
+and a chat line on screen until you add one. Markets for a different game version should get
+`pricing = false` so overlapping item ids don't mix into your prices.
+
+**Forever (Nov 2026)** has no realms in the API (`dynamic-forever-*` answers 404 for the realm
+index). It has rulesets instead (`/data/wow/ruleset/index`: PvP, Normal, Roleplay, Roleplay PvP),
+and since Nov 6 `/data/wow/ruleset/{id}/auctions/` (the trailing slash matters) lists 15 auction
+houses: five each of Alliance, Horde and Blackwater (neutral), ids 110-121 and 123-125, a few of
+them empty. Each house has realm-style `/auctions/{id}` and its own `/auctions/{id}/commodities`.
+Every ruleset lists the same houses with the same auctions, and nothing says which ruleset a house
+belongs to. So:
+- Add **Every realm in the region** with game **Forever** (`us-forever-all-realms`). Each house is
+  collected once and becomes a market `us-forever-<faction>-<id>` holding both of its lists, like
+  a classic realm's faction house; the 12 non-empty ones also make the `us-forever-region` baseline.
+  About 590k listings in the US, a few seconds an hour.
+- Your characters find their house themselves: a Forever character's in-game AH scans (last 14
+  days) are compared with each house of its faction, and the one sharing clearly the most exact
+  item + unit price pairs (at least 5) is its house (`pricing.match_houses`). Until a character
+  has scanned enough, it has no Forever prices. The house's set in Data.lua carries the realm
+  names of its matched characters and its faction, and the addon only uses a house of your faction.
+- Forever's item data is missing many Classic-era items, so some names come from the game client.
 
 **Launch day:** on the server, run `python -m goldmine_server.cli probe us` to see which API
 namespaces exist (Forever's is `dynamic-forever-us`) and `python -m goldmine_server.cli realms us
@@ -294,8 +311,8 @@ cd server && .venv/bin/python -m unittest discover -s tests   # server: import, 
 ## Notes on Forever's economy
 
 - Forever uses **mega-realms per realm type (PvP / PvE / RP / Hardcore) and region**, and the
-  AH is shared across each region + type. Characters record their `region`; future price
-  data should be keyed by region + realm type, not realm name.
+  AH is shared across each region + type and faction. In the API that's a house per faction
+  (above); characters record their `region` and faction, and their scans pick the house.
 - Gold is much scarcer than in retail; a single gold is a lot. Amounts are stored in copper
   everywhere, and the summary prints like the game does (`4s 79c`, not `0g 04s 79c`).
 

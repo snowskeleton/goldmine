@@ -268,7 +268,10 @@ def markets_page(request: Request, region: str = "us", game: str = "", namespace
     namespace = namespace_for(region, game, namespace)
     cfg = load_config()
     realms, error = [], None
-    if namespace:
+    if market.game_for(namespace) == "forever":  # no realms: rulesets, all listing the same 15 houses
+        error = ('Forever has no realms in the API. Pick "Every realm in the region" to collect all of '
+                 "its auction houses; your characters are matched to theirs from their in-game scans.")
+    elif namespace:
         api = cfg.get("api") or {}
         try:
             realms = realms_for(api, region, namespace)
