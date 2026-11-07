@@ -73,7 +73,9 @@ app toggles.
 
 Each entry has: id, character, timestamp, delta, balance after, source, zone/subzone,
 map id, session id, and a `meta` object with details (item, NPC, buyer, mail sender,
-quest name, flight destination, AH cut/deposit, …).
+quest name, flight destination, AH cut/deposit, …). AH deposits name what was posted
+(`item`, `item_id`, `qty`, and `buyout` or `unit_price`), one entry per auction created, so a
+post of several identical items logs one deposit for each.
 
 ## Install the addon
 
@@ -305,6 +307,8 @@ The tests run against a mock, so these need checking in the real client
 - Which `Enum.PlayerInteractionType` values exist, and whether the hooked functions
   (`SendMail`, `TakeTaxiNode`, `C_AuctionHouse.*`, `C_Bank.*`) exist. Missing ones are
   skipped safely; they just fall back to window-based labels.
+- AH deposits: that one `C_AuctionHouse.PostItem` of N identical items charges N separate
+  deposits, and that the `ItemLocation` still holds the item when the hook reads its id and link.
 - Owned auctions: that `buyoutAmount` is per unit for commodities (the import assumes so), and
   `C_TradeSkillUI.GetCraftingOperationInfo(recipeID, {}, nil, false)` / the
   `TRADE_SKILL_ITEM_CRAFTED_RESULT` payload fields (`multicraft`, `resourcesReturned`,

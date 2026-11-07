@@ -8,8 +8,9 @@ What the addon records (Goldmine.lua) and how it's used here:
                    price (total), deposit, cut, buyer} and, from newer addons, qty. Without qty the
                    units are estimated as price / the item's lowest listing at the time (flagged).
                    Units close the oldest lots first; sales with no open lot are "unmatched".
-  auction_deposit  delta = -deposit, no item: account-level fee. Refunds arrive inside sales, so
-                   net deposit loss = deposits paid - deposits refunded on sales.
+  auction_deposit  delta = -deposit: counted as an account-level fee. Newer addons add meta {item,
+                   item_id, qty, ...}, one row per auction created. Refunds arrive inside sales,
+                   so net deposit loss = deposits paid - deposits refunded on sales.
   auction_cancel   delta = -fee, no item: account-level fee.
 
 Crafts (craft_results) move cost from reagents to what was made: each craft takes its reagents,

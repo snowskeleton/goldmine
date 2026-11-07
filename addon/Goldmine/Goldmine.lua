@@ -22,7 +22,7 @@ local db, char, charKey, sessionId
 local lastMoney
 local debugMode = false
 
-local hints = {}    -- { src, amount?, sign?, low?, meta?, at }
+local hints = {}    -- { src, amount?, sign?, low?, meta?, uses?, at }
 local contexts = {} -- name -> { opened, closed?, meta? }
 local pending = {}  -- money changes awaiting classification
 
@@ -93,6 +93,7 @@ local function AddHint(src, opts)
         sign = opts.sign,
         low = opts.low,
         meta = opts.meta,
+        uses = opts.uses, -- money changes it explains (default 1)
         at = GetTime(),
     }
 end
@@ -132,10 +133,16 @@ local function HintMatches(h, p, pass)
 end
 
 -- pass 1: exact amount; pass 2: sign/unconstrained; pass 3: low-priority hints.
+-- A hint with uses > 1 stays for the next change, its TTL restarting at each match.
 local function TakeHint(p, pass)
     for i, h in ipairs(hints) do
         if HintMatches(h, p, pass) then
-            table.remove(hints, i)
+            h.uses = (h.uses or 1) - 1
+            if h.uses <= 0 then
+                table.remove(hints, i)
+            else
+                h.at = p.at
+            end
             return h
         end
     end
@@ -384,8 +391,24 @@ local function InstallHooks()
 
     -- Auction house (modern API).
     if C_AuctionHouse then
-        Hook(C_AuctionHouse, "PostItem", function() AddHint("auction_deposit", { sign = -1 }) end)
-        Hook(C_AuctionHouse, "PostCommodity", function() AddHint("auction_deposit", { sign = -1 }) end)
+        -- What was posted, so each deposit names its item. Read from the ItemLocation, which
+        -- still holds the item when the hook runs (the server removes it later).
+        local function PostMeta(loc, duration, quantity)
+            local link = C_Item and Safe(C_Item.GetItemLink, loc)
+            local id = C_Item and Safe(C_Item.GetItemID, loc)
+            return { item = link, item_id = id, qty = quantity, duration = duration }
+        end
+        -- One PostItem of N identical items creates N auctions, each charging its own deposit.
+        Hook(C_AuctionHouse, "PostItem", function(loc, duration, quantity, bid, buyout)
+            local meta = PostMeta(loc, duration, quantity)
+            meta.qty, meta.buyout, meta.bid, meta.auctions = 1, buyout, bid, quantity
+            AddHint("auction_deposit", { sign = -1, meta = meta, uses = tonumber(quantity) or 1 })
+        end)
+        Hook(C_AuctionHouse, "PostCommodity", function(loc, duration, quantity, unitPrice)
+            local meta = PostMeta(loc, duration, quantity)
+            meta.unit_price = unitPrice
+            AddHint("auction_deposit", { sign = -1, meta = meta })
+        end)
         Hook(C_AuctionHouse, "PlaceBid", function() AddHint("auction_buy", { sign = -1 }) end)
         Hook(C_AuctionHouse, "ConfirmCommoditiesPurchase", function(itemID, quantity)
             AddHint("auction_buy", { sign = -1, meta = { item_id = itemID, qty = quantity } })

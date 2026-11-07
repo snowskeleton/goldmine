@@ -158,6 +158,7 @@ unpack = unpack or table.unpack -- WoW is Lua 5.1
 local tooltipHook
 TooltipDataProcessor = { AddTooltipPostCall = function(_, fn) tooltipHook = fn end }
 Enum.TooltipDataType = { Item = 0 }
+C_AuctionHouse = { PostItem = function() end, PostCommodity = function() end } -- hooked at login
 -- Data.lua is generated per machine (and untracked); the Advice tests below supply their own Goldmine_Data.
 for _, file in ipairs({ "Goldmine.lua", "Market.lua", "Advice.lua", "TaskQueue.lua" }) do
     assert(loadfile("Goldmine/" .. file))("Goldmine", ns)
@@ -267,6 +268,34 @@ money = money + 999
 fire("PLAYER_LOGIN")
 fire("PLAYER_ENTERING_WORLD", false, true)
 expect("reconcile on login", last().src == "reconcile" and last().d == 999)
+
+-- AH posts: each deposit names the item; one PostItem of 3 identical items charges 3 deposits.
+advance(5)
+C_Item = {
+    GetItemID = function(loc) return loc.id end,
+    GetItemLink = function(loc) return "|Hitem:" .. loc.id .. "::|h[Item " .. loc.id .. "]|h" end,
+}
+fire("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", 21)
+C_AuctionHouse.PostItem({ id = 5958 }, 2, 3, nil, 3000)
+for _ = 1, 3 do
+    advance(0.1)
+    changeMoney(-100)
+    advance(2.5) -- slower than a hint's TTL: the batch keeps it alive
+end
+C_AuctionHouse.PostCommodity({ id = 252437 }, 2, 5, 900)
+changeMoney(-60)
+advance(1)
+changeMoney(-100) -- nothing posted: just the open AH window
+advance(1)
+local dep = last(5)
+expect("item post deposit names the item", dep.src == "auction_deposit" and dep.m.item_id == 5958
+    and dep.m.item:find("Item 5958") and dep.m.qty == 1 and dep.m.auctions == 3 and dep.m.buyout == 3000)
+expect("every auction of a multi-item post is a deposit", last(4).src == "auction_deposit"
+    and last(3).src == "auction_deposit" and last(3).m.item_id == 5958, last(3).src)
+expect("commodity deposit names item and quantity", last(2).src == "auction_deposit"
+    and last(2).m.item_id == 252437 and last(2).m.qty == 5 and last(2).m.unit_price == 900 and last(2).d == -60)
+expect("a post's hint isn't reused past its auctions", last().src == "auction" and last().m == nil, last().src)
+fire("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 21)
 
 -- Slash commands don't error.
 SlashCmdList.GOLDMINE("")
