@@ -145,3 +145,41 @@ end
 
 ns.AddPriceLines = AddPriceLines -- for tests
 ns.ResetSets = function() chosen, realmSet, commoditySet = nil, nil, nil end
+
+---------------------------------------------------------------------------
+-- "Blizzard serves this game's AH now": the server probes the API hourly for game versions it
+-- can't collect and lists those that started answering in Data.lua (ah_live). Until a market
+-- for this realm exists, say so loudly once per login or /reload.
+---------------------------------------------------------------------------
+
+local LABELS = { forever = "Forever", classic1x = "Classic Era", classicann = "Anniversary" }
+
+local function LiveNotice()
+    ChooseSets()
+    if realmSet then return nil end -- already priced: the market was added
+    local game = ClientGame()
+    local region = ((GetCurrentRegionName and GetCurrentRegionName()) or ""):lower()
+    for _, live in ipairs((Goldmine_Data and Goldmine_Data.ah_live) or {}) do
+        if live.game == game and (region == "" or live.region == region) then
+            return ("Blizzard's API now serves %s's auction house! Add this realm on your Goldmine "
+                .. "server's Markets page to collect its prices."):format(LABELS[game] or game)
+        end
+    end
+end
+
+local noticeFrame = CreateFrame("Frame")
+noticeFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+noticeFrame:SetScript("OnEvent", function(self)
+    self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+    C_Timer.After(8, function() -- after the login chat spam
+        local msg = LiveNotice()
+        if not msg then return end
+        ns.Print("|cffff4040" .. msg .. "|r")
+        if RaidNotice_AddMessage and RaidWarningFrame then
+            pcall(RaidNotice_AddMessage, RaidWarningFrame, msg, ChatTypeInfo and ChatTypeInfo.RAID_WARNING
+                or { r = 1, g = 0.3, b = 0.1 })
+        end
+        if PlaySound and SOUNDKIT and SOUNDKIT.RAID_WARNING then pcall(PlaySound, SOUNDKIT.RAID_WARNING) end
+    end)
+end)
+ns.LiveNotice = LiveNotice -- for tests

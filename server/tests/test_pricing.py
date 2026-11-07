@@ -137,6 +137,9 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(s0["prices"][BOLT][:2], [100, 40])
         self.assertEqual(s0["crafts"][0][1], "Bolt of Linen Cloth")
         self.assertEqual(s0["deals"][0][0], BOLT)
+        self.assertNotIn("ah_live", data)
+        pricing.write_addon_data(out, [ex], now=NOW, ah_live=[{"game": "forever", "region": "us"}])
+        self.assertEqual(svparse.parse_file(out)["Goldmine_Data"]["ah_live"], [{"game": "forever", "region": "us"}])
 
 
 class MultiGameTests(unittest.TestCase):

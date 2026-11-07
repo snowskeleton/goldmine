@@ -16,6 +16,7 @@ import sys
 import gzip
 import threading
 import json
+import sqlite3
 import time
 import urllib.error
 import urllib.parse
@@ -232,9 +233,9 @@ def namespace_games(conn) -> list[dict]:
 
 
 # Era and Anniversary list their auction houses but every listings request has returned 404 since
-# early 2026; Forever's namespace had no realms at all at launch (Nov 2026). Check one house a day
-# so the dashboard says when Blizzard serves them.
-PROBE_EVERY = 86400
+# early 2026; Forever's namespace had no realms at all at launch (Nov 2026). Check one house an hour
+# (one collection run) so the dashboard, and the addon, say when Blizzard serves them.
+PROBE_EVERY = 3600 - 300  # a run a few minutes early still checks
 
 
 def _probe(client: Client, region: str, namespace: str) -> tuple[bool, str]:
@@ -269,6 +270,22 @@ def probe_unpublished(conn, client: Client, regions, now: int | None = None, log
                     "it can be added on the Markets page")
             elif not ok and row and row[1]:
                 log(f"{g['label']} ({region}): auction house data is unavailable again ({detail})")
+
+
+def served_games(conn) -> list[dict]:
+    """Game versions the API didn't serve AH data for that it does now: [{game, region}], for the
+    addon's "add this realm" notice."""
+    games = {g["prefix"]: g["game"] for g in NAMESPACE_GAMES if not g["auctions"]}
+    try:
+        rows = conn.execute("SELECT namespace FROM api_probes WHERE ok = 1 ORDER BY namespace").fetchall()
+    except sqlite3.OperationalError:  # no probes table yet
+        return []
+    out = []
+    for ns, in rows:
+        prefix, region = ns.rsplit("-", 1)
+        if prefix in games:
+            out.append({"game": games[prefix], "region": region})
+    return out
 
 
 def game_for(namespace: str, override: str | None = None) -> str:

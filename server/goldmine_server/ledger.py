@@ -650,7 +650,7 @@ def set_reports(conn, args, cfg=None) -> list[pricing.SetExport]:
 def push(conn, args, cfg=None, client=None) -> None:
     """Write the addon's Data.lua (prices, crafts, deals for the user's realms) to args.addon_data."""
     exports = set_reports(conn, args, cfg)
-    n = pricing.write_addon_data(args.addon_data, exports)
+    n = pricing.write_addon_data(args.addon_data, exports, ah_live=market.served_games(conn))
     size = os.path.getsize(args.addon_data) / 1024
     print(f"wrote {args.addon_data} ({len(exports)} market sets, {n} item prices, {size:.0f} KB)")
 

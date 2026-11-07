@@ -195,10 +195,14 @@ class CollectTests(unittest.TestCase):
                          [("dynamic-classic1x-us", 0), ("dynamic-classicann-us", 0), ("dynamic-forever-us", 0)])
         self.assertEqual(logs, [])
         client.responses["/data/wow/connected-realm/5085/auctions/2"] = [({"auctions": [{"id": 1}]}, None)]
+        self.assertEqual(market.served_games(self.conn), [])
+        market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 1200, log=logs.append)
+        self.assertEqual(logs, [])  # checked about once an hour, not every collection run
         market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 3600, log=logs.append)
-        self.assertEqual(logs, [])  # checked at most once a day
-        market.probe_unpublished(self.conn, client, {"us"}, now=t0 + 86400, log=logs.append)
         self.assertEqual(len(logs), 3)
+        self.assertEqual(market.served_games(self.conn), [{"game": "classic1x", "region": "us"},
+                                                          {"game": "classicann", "region": "us"},
+                                                          {"game": "forever", "region": "us"}])
         self.assertIn("Classic Era (us): Blizzard now serves auction house data (1 listings", logs[0])
         games = {g["game"]: g["auctions"] for g in market.namespace_games(self.conn)}
         self.assertEqual(games, {"retail": True, "classic": True, "classic1x": True, "classicann": True,

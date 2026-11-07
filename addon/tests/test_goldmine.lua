@@ -620,6 +620,21 @@ for _, realmName in ipairs({ "Somewhere Else", "Testrealm" }) do
     tooltipHook(tooltip, { id = 2996 })
     expect("no retail prices in Forever on " .. realmName, #lines == 0, lines[1])
 end
+-- The server says Blizzard serves Forever's AH now: nag until this realm has a market.
+expect("no AH notice before the API serves it", ns.LiveNotice() == nil)
+Goldmine_Data.ah_live = { { game = "classicann", region = "us" }, { game = "forever", region = "eu" } }
+ns.ResetSets()
+expect("no AH notice for another game or region", ns.LiveNotice() == nil)
+Goldmine_Data.ah_live[3] = { game = "forever", region = "us" }
+ns.ResetSets()
+local notice = ns.LiveNotice()
+expect("AH notice in Forever once the API serves it", notice and notice:find("Forever") ~= nil, notice)
+Goldmine_Data.sets[5] = { kind = "realm", game = "forever", region = "us", name = "us-forever-x",
+    realms = { "Testrealm" }, prices = {}, crafts = {}, deals = {} }
+GetRealmName = function() return "Testrealm" end
+ns.ResetSets()
+expect("no AH notice once the realm has a market", ns.LiveNotice() == nil)
+Goldmine_Data.sets[5], Goldmine_Data.ah_live = nil, nil
 GetBuildInfo = savedBuildInfo
 -- Unknown game and no matching realm: nothing, rather than the first commodity set.
 WOW_PROJECT_ID = nil

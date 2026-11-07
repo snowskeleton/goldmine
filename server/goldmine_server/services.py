@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from fastapi import HTTPException
 
-from . import db, ledger, pricing, region, reports, settings, svparse
+from . import db, ledger, market, pricing, region, reports, settings, svparse
 from .collector import load_config
 
 class _ThreadStdout:
@@ -190,9 +190,9 @@ def addon_data(user_id: int) -> bytes:
     with _install_lock:
         lock = _addon_locks.setdefault(user_id, threading.Lock())
     latest, stamps = data_version(user_id, own_sets=True)
-    stamp = f"{latest}:{stamps}"
     conn = db.user_conn(user_id)
     try:
+        stamp = f"{latest}:{stamps}:{market.served_games(conn)}"
         if out.exists() and stamp_file.exists() and stamp_file.read_text() == stamp:
             return out.read_bytes()
         with lock:  # one build per user at a time; whoever waited gets the fresh file

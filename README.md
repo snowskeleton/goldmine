@@ -269,8 +269,10 @@ serve the retail-style layout (per-realm `/auctions`; Mists' region commodities 
 empty). Era (`classic1x`) and Anniversary (`classicann`) list auction houses but every auction
 path returns 404, so their AH data isn't published. **Forever (Nov 2026)** is `static-forever-*`
 / `dynamic-forever-*`: game data is served (build 1.60.1), but the dynamic namespace has no
-realms yet. The collector checks one auction house of each of these once a day and says so on
-the dashboard (and unlocks them on the Markets page) once Blizzard serves the listings. Markets
+realms yet. The collector checks one auction house of each of these once an hour and says so on
+the dashboard (and unlocks them on the Markets page) once Blizzard serves the listings. The
+addon hears about it too (`ah_live` in Data.lua): logging in or `/reload`ing in that game on a realm
+with no market yet puts a raid-warning banner, a sound and a chat line on screen until you add one. Markets
 for a different game version should get `pricing = false` so overlapping item ids don't mix into your prices.
 
 **Launch day:** on the server, run `python -m goldmine_server.cli probe us` to see which API
