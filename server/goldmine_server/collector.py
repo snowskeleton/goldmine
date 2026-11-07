@@ -7,7 +7,7 @@ import threading
 import time
 from collections import deque
 
-from . import archive, db, market, region, settings
+from . import archive, db, market, region, settings, tsm
 
 
 def load_config() -> dict:
@@ -98,6 +98,11 @@ class Collector:
                         market.probe_unpublished(conn, client, {m["region"] for m in cfg["market"]}, log=self.add)
                     except Exception as exc:  # a check, nothing depends on it
                         self.add(f"API check failed: {exc}")
+                    if cfg.get("tsm", {}).get("enabled", True):
+                        try:
+                            tsm.refresh(conn, cfg, log=self.add)
+                        except Exception as exc:  # a second opinion; nothing depends on it
+                            self.add(f"TSM prices failed: {exc}")
                     try:
                         from . import account  # late: account -> marketdata -> services -> collector
                         account.refresh_item_info(conn, client, cfg, log=self.add)

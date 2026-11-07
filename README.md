@@ -230,7 +230,20 @@ How the numbers are defined is documented at the top of `server/goldmine_server/
 of troll listings after supply runs dry don't move it); **sold/day** = units that vanished
 between snapshots before they could have expired (cancellations count too, so it's an upper
 bound); **definite sold/day** = only units bought out of listings that stayed up; your own
-in-game scans override API prices when they're fresher.
+in-game scans override API prices when they're fresher. **Historical** = market value over 60
+days. **Listing turnover** (7 days, `pricing.turnover`, exact from each listing's lifecycle):
+*listed/day* and *posts/day* (units and listings newly posted), *sell-through* (of the units whose
+listing ended, the share that left early rather than running out: 50 posted a day with 5 selling
+is 0.1) and *avg sold price* (unit price of what left early). Like sold/day, cancelling and
+reposting counts as leaving early, so it reads high on items people undercut all day.
+
+**TSM's numbers alongside** (`server/goldmine_server/tsm.py`). Each collection run re-checks
+[TSM's public CSVs](https://tradeskillmaster.com/public-data) at most hourly (If-Modified-Since,
+so unchanged files cost a tiny request): the region file (and pets on retail) for every game and
+region you collect, retail's commodities, and the realm files of realms configured on their own.
+TSM's region sale rate, average sale price and sold/day come from its users' real sales, which
+the API can't see. Only retail and Forever are mapped to TSM game types. Each file's latest copy is
+kept; it also fills item names Forever's item API doesn't have. Off with `[tsm] enabled = false`.
 
 **Crafts.** Reagents are costed at what buying 10 crafts' worth costs right now: walking up
 from the cheapest listing (the depth bands, or the full list from your own in-game scan), so a
@@ -408,7 +421,7 @@ times are unix seconds with an ISO 8601 UTC copy (`*_iso`). Lists are capped and
 | `items?q=linen` | item search by (partial) name or id; only names the server has cached are searchable (`limit` ≤ 100) |
 | `current?market=us-proudmoore&item=2589&item=Wool Cloth` | latest state: min_price, p10, median, quantity, auctions, depth5/10/25 (≤ 100 items; ids or names, comma-separated works too) |
 | `history?market=…&item=…&since=&until=&resolution=hourly` | the item's state at every snapshot, rebuilt from change-based storage (a state holds until the item's next row); `raw`, `hourly` or `daily` (UTC buckets: lowest min, mean p10/median/quantity, summed sold/gone, `close_*`). Default window 7 days, at most 90; ≤ 1000 rows per page |
-| `values?market=…[&item=…]&hours=72` | the price model: market value, current min/p10, buy, sell, sold/day, definite sold/day; without `item`, every item busiest first (`min_sold`, paged) |
+| `values?market=…[&item=…]&hours=72` | the price model: market value, current min/p10, buy, sell, sold/day, definite sold/day, historical (60 days), listing turnover (listed/day, posts/day, sell-through, avg sold price over 7 days) and `tsm` (TSM's region and realm/commodity numbers); without `item`, every item, `sort=sold` (busiest), `listed` or `sell_through` (`min_sold`, `min_listed`, paged) |
 | `deals?market=…&max_ratio=0.7&min_sold=1` | listed well below market value and actually selling |
 | `crafts?hours=72&profession=&min_sold=&priced_only=&limit=&offset=` | your craft report (recipes your characters know), per realm |
 

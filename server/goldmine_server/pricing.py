@@ -147,16 +147,98 @@ _stats_locks: dict = {}
 _stats_guard = threading.Lock()
 
 
+@dataclass
+class Turnover:
+    """How an item's listings fared over a window, from their lifecycles (store.auctions):
+    units listed, units that left early (definite partial buys plus listings that vanished with
+    time to spare: sold or cancelled, so an upper bound) and units whose listing ran out."""
+    listed: int = 0          # units in listings first seen in the window
+    posts: int = 0           # those listings
+    sold: int = 0            # units that left early
+    bought: int = 0          # the definite part: units bought out of listings still up
+    expired: int = 0         # units in listings that ended when they could have expired
+    sold_value: int = 0      # copper: sold units x their unit price (buyout listings)
+    sold_priced: int = 0     # sold units that had a unit price
+    days: float = 0.0
+
+    @property
+    def listed_per_day(self) -> float:
+        return self.listed / self.days if self.days else 0.0
+
+    @property
+    def sell_through(self) -> float | None:
+        """Share of ended units that left early rather than running out."""
+        done = self.sold + self.expired
+        return self.sold / done if done else None
+
+    @property
+    def avg_sold_price(self) -> int | None:
+        return round(self.sold_value / self.sold_priced) if self.sold_priced else None
+
+
+TURNOVER_DAYS = 7
+HISTORICAL_DAYS = 60  # TSM's historical price looks back about this far
+
+
+def turnover(conn, market: str, since: int) -> dict[tuple[int, int], Turnover]:
+    """Per (item, variant) over [since, latest snapshot]. Listings already up in the market's
+    first snapshot weren't posted then, so they don't count as listed."""
+    mid = store.market_ids(conn, [market]).get(market)
+    times = dict(conn.execute("SELECT id, last_modified FROM snapshots WHERE market = ?", (market,)))
+    if mid is None or not times:
+        return {}
+    first = min(times)
+    in_window = [t for t in times.values() if t > since]
+    days = (max(times.values()) - max(min(times.values()), since)) / 86400
+    if not in_window or days <= 0:
+        return {}
+    start = min(i for i, t in times.items() if t > since)
+    out: dict[tuple[int, int], Turnover] = {}
+    for (item, _aid, variant, _bonus, unit, _bid, qty_first, qty_last, _tl0, _tl1, first_snap, ended_snap,
+         outcome, changes) in archive.auctions(conn, mid, ended_from=start):
+        t = out.get((item, variant))
+        if t is None:
+            t = out[(item, variant)] = Turnover(days=days)
+        if first_snap != first and times.get(first_snap, 0) > since:
+            t.listed += qty_first
+            t.posts += 1
+        sold = 0
+        qty = qty_first
+        for snap, q in changes:
+            if times.get(snap, 0) > since:
+                t.bought += qty - q
+                sold += qty - q
+            qty = q
+        if ended_snap is not None and times.get(ended_snap, 0) > since:
+            if outcome == store.OUTCOME_GONE_EARLY:
+                sold += qty_last
+            elif outcome == store.OUTCOME_MAY_EXPIRE:
+                t.expired += qty_last
+        t.sold += sold
+        if unit is not None and sold:
+            t.sold_value += unit * sold
+            t.sold_priced += sold
+    return out
+
+
 def _db_file(conn) -> str:
     return next((row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
 
 
 def cached_market_stats(conn, market: str, since: int) -> dict[tuple[int, int], tuple]:
+    return _cached(market_stats, conn, market, since)
+
+
+def cached_turnover(conn, market: str, since: int) -> dict[tuple[int, int], Turnover]:
+    return _cached(turnover, conn, market, since)
+
+
+def _cached(fn, conn, market: str, since: int):
     path = _db_file(conn)
     if not path:  # in-memory databases can't be told apart; just compute
-        return market_stats(conn, market, since)
+        return fn(conn, market, since)
     latest = conn.execute("SELECT MAX(id) FROM snapshots WHERE market = ?", (market,)).fetchone()[0]
-    key = (path, market, since // STATS_BUCKET, latest)
+    key = (path, market, since // STATS_BUCKET, latest, fn.__name__)
     with _stats_guard:
         if key in _stats_cache:
             _stats_cache.move_to_end(key)
@@ -166,7 +248,7 @@ def cached_market_stats(conn, market: str, since: int) -> dict[tuple[int, int], 
         with _stats_guard:
             if key in _stats_cache:
                 return _stats_cache[key]
-        stats = market_stats(conn, market, since)
+        stats = fn(conn, market, since)
         with _stats_guard:
             # A newer snapshot makes this market's older entries dead weight.
             for old in [k for k in _stats_cache if k[:2] == key[:2] and k[3] != latest]:

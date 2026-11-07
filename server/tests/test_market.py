@@ -201,6 +201,24 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(sets["us-forever-horde-113"].chars, [])  # Thin's one row isn't enough
         self.assertEqual(sets["us-forever-alliance-110"].chars, [])
 
+    def test_turnover(self):
+        """Listed, sold, expired from listing lifecycles: what's already up when collection starts
+        isn't 'listed'; partial buys and early vanishing are sold; running out is expired."""
+        from goldmine_server import pricing, store
+        t0 = 1_790_000_000
+        snaps = [[commodity(1, 5, 10, 100)],
+                 [commodity(1, 5, 6, 100), commodity(2, 5, 5, 120, "VERY_LONG"), commodity(3, 5, 2, 90, "SHORT")],
+                 [commodity(2, 5, 5, 120, "VERY_LONG")]]
+        for i, auctions in enumerate(snaps):
+            store.store_snapshot(self.conn, "m", {"auctions": auctions}, t0 + i * HOUR)
+        t = pricing.turnover(self.conn, "m", t0 - 1)[(5, 0)]
+        self.assertEqual((t.listed, t.posts, t.bought, t.sold, t.expired), (7, 2, 4, 10, 2))
+        self.assertAlmostEqual(t.sell_through, 10 / 12)
+        self.assertEqual(t.avg_sold_price, 100)
+        self.assertAlmostEqual(t.listed_per_day, 7 / (2 / 24))
+        late = pricing.turnover(self.conn, "m", t0 + HOUR + 1)[(5, 0)]  # only the last hour
+        self.assertEqual((late.listed, late.bought, late.sold, late.expired), (0, 0, 6, 2))
+
     def test_collect_downloads_in_parallel(self):
         import threading
         t0 = 1_790_000_000

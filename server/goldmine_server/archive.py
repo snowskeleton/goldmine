@@ -301,10 +301,12 @@ def last_state(conn, mid: int, item: int, variant: int | None, at: int, priced: 
     return best
 
 
-def auctions(conn, mid: int, item: int | None = None, up_at: int | None = None, cache: dict | None = None) -> list[tuple]:
+def auctions(conn, mid: int, item: int | None = None, up_at: int | None = None, cache: dict | None = None,
+             ended_from: int | None = None) -> list[tuple]:
     """Listings (item_id, *AUCTION_COLS, changes) of a market, hot and archived, sorted by
     auction_id; changes = ((snap, quantity), ...). item None = every item; up_at = only those
-    up in that snapshot. `cache` keeps decoded chunks between calls."""
+    up in that snapshot; ended_from = only those still up or ended in that snapshot or later.
+    `cache` keeps decoded chunks between calls."""
     where, params = "a.market_id = ?", [mid]
     if item is not None:
         where += " AND a.item_id = ?"
@@ -312,6 +314,9 @@ def auctions(conn, mid: int, item: int | None = None, up_at: int | None = None, 
     if up_at is not None:
         where += " AND a.first_snap <= ? AND (a.ended_snap IS NULL OR a.ended_snap > ?)"
         params += [up_at, up_at]
+    if ended_from is not None:
+        where += " AND (a.ended_snap IS NULL OR a.ended_snap >= ?)"
+        params.append(ended_from)
     out: dict[int, tuple] = {}
     rows = conn.execute(f"SELECT a.item_id, {', '.join('a.' + c for c in AUCTION_COLS)} FROM auctions a WHERE {where}",
                         params).fetchall()
@@ -331,6 +336,9 @@ def auctions(conn, mid: int, item: int | None = None, up_at: int | None = None, 
     if up_at is not None:
         where += " AND first_snap <= ? AND last_snap > ?"
         params += [up_at, up_at]
+    if ended_from is not None:
+        where += " AND last_snap >= ?"
+        params.append(ended_from)
     for rowid, n, chunk_item, data in conn.execute(
             f"SELECT rowid, row_count, item_id, data FROM auction_chunks WHERE {where}", params):
         decoded = cache.get((rowid, n)) if cache is not None else None
@@ -339,7 +347,7 @@ def auctions(conn, mid: int, item: int | None = None, up_at: int | None = None, 
             if cache is not None:
                 cache[(rowid, n)] = decoded
         for r in decoded:
-            if up_at is None or r[9] <= up_at < r[10]:
+            if (up_at is None or r[9] <= up_at < r[10]) and (ended_from is None or r[10] >= ended_from):
                 out.setdefault(r[0], (chunk_item, *r))
     return [out[k] for k in sorted(out)]
 

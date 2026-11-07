@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 
-from . import archive, region, store
+from . import archive, region, store, tsm
 
 TOKEN_URL = "https://oauth.battle.net/token"
 API_HOST = "https://{region}.api.blizzard.com"
@@ -198,7 +198,7 @@ class Client:
 MIGRATIONS = {"markets": [("game", "TEXT"), ("realms", "TEXT"), ("source", "TEXT")]}
 
 
-SCHEMA_VERSION = 7  # bump when any of the schemas ensure_schema applies change
+SCHEMA_VERSION = 8  # bump when any of the schemas ensure_schema applies change
 
 
 def ensure_schema(conn) -> None:
@@ -216,6 +216,7 @@ def ensure_schema(conn) -> None:
     conn.executescript(store.SCHEMA)
     conn.executescript(archive.SCHEMA)
     conn.executescript(region.SCHEMA)
+    conn.executescript(tsm.SCHEMA)
     conn.execute(f"PRAGMA main.user_version = {SCHEMA_VERSION}")
 
 

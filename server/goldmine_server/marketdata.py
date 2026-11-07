@@ -19,8 +19,9 @@ from urllib.request import pathname2url
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import archive, auth, db, ledger, pricing, region, services, settings, store
+from . import archive, auth, db, ledger, pricing, region, services, settings, store, tsm
 from .auth import User
+from .collector import load_config
 
 MAX_ITEMS = 100          # items per current/values request
 MAX_SEARCH = 100
@@ -94,6 +95,15 @@ def _game_names(conn, out: dict) -> dict:
                 f"SELECT item_id, name FROM item_meta WHERE name IS NOT NULL AND item_id IN ({','.join('?' * len(chunk))})",
                 chunk))
         except sqlite3.OperationalError:  # no game DB attached
+            break
+    missing = [i for i, n in out.items() if not n]  # then TSM's (Forever's item API lacks many)
+    for i in range(0, len(missing), 500):
+        chunk = missing[i:i + 500]
+        try:
+            out.update((k, n) for k, n in conn.execute(
+                f"SELECT id, MAX(name) FROM tsm_prices WHERE kind = 'items' AND name IS NOT NULL "
+                f"AND id IN ({','.join('?' * len(chunk))}) GROUP BY id", chunk))
+        except sqlite3.OperationalError:  # older database: no TSM table
             break
     return out
 
@@ -286,22 +296,44 @@ def price_history(conn, market: str, item, variant: int = 0, since: int | None =
             "next_offset": nxt if nxt < total else None, "rows": page}
 
 
-def _price_dict(p: pricing.Price, name: str | None, labels: dict) -> dict:
+def _price_dict(p: pricing.Price, name: str | None, labels: dict, extra: dict | None = None) -> dict:
     return {"item_id": p.item_id, "variant": p.variant, "variant_label": labels.get(p.variant), "name": name,
             "market_value": p.market_value,
             "current_min": p.current_min, "current_p10": p.current_p10, "buy": p.buy, "sell": p.sell,
             "sold_per_day": round(p.sold_per_day, 2), "definite_sold_per_day": round(p.bought_per_day, 2),
-            "as_of": p.as_of, "as_of_iso": iso(p.as_of)}
+            "as_of": p.as_of, "as_of_iso": iso(p.as_of), **(extra or {})}
+
+
+def _turnover_dict(t: pricing.Turnover | None) -> dict:
+    """Listing turnover over pricing.TURNOVER_DAYS: is it 50 posted a day and 5 sold, or 5000?"""
+    if t is None or not t.days:
+        return {"listed_per_day": None, "posts_per_day": None, "sell_through": None, "avg_sold_price": None}
+    return {"listed_per_day": round(t.listed_per_day, 2), "posts_per_day": round(t.posts / t.days, 2),
+            "sell_through": None if t.sell_through is None else round(t.sell_through, 3),
+            "avg_sold_price": t.avg_sold_price}
+
+
+def _market_game(conn, market: str) -> tuple[str, str]:
+    row = conn.execute("SELECT COALESCE(game, 'retail'), region FROM markets WHERE name = ?", (market,)).fetchone()
+    return (row[0], row[1]) if row else ("retail", "")
+
+
+SORTS = ("sold", "listed", "sell_through")
 
 
 def market_values(conn, market: str, items=None, hours: int = 72, min_sold: float = 0.0,
-                  limit: int | None = None, offset: int = 0) -> dict:
-    """Goldmine's price model (see _table) for one market. With `items`, just those, with a row
-    per pet breed / gear bonus set after the item-wide one; otherwise every item (item-wide rows
-    only), busiest (sold/day) first."""
+                  limit: int | None = None, offset: int = 0, sort: str = "sold", min_listed: float = 0.0) -> dict:
+    """Goldmine's price model (see _table) for one market, plus each item's historical value (the
+    same model over pricing.HISTORICAL_DAYS), its listing turnover over pricing.TURNOVER_DAYS and,
+    where TSM publishes it, TSM's numbers. With `items`, just those, with a row per pet breed /
+    gear bonus set after the item-wide one; otherwise every item (item-wide rows only), sorted by
+    `sort`: sold (sold/day, the default), listed (units posted/day) or sell_through."""
     _market_mid(conn, market)
     hours = _clamp(hours, 1, 24 * 30, 72)
+    if sort not in SORTS:
+        raise HTTPException(400, f"sort must be one of {', '.join(SORTS)}")
     table, end = _table(conn, market, hours)
+    turn = pricing.cached_turnover(conn, market, end - pricing.TURNOVER_DAYS * 86400) if end else {}
     if items:
         ids = resolve_items(conn, items)
         by_item: dict[int, list] = {}
@@ -311,16 +343,28 @@ def market_values(conn, market: str, items=None, hours: int = 72, min_sold: floa
         total, offset = len(prices), 0
     else:
         limit, offset = _clamp(limit, 1, MAX_ITEMS, 50), max(0, int(offset or 0))
+        empty = pricing.Turnover()
+        rank = {"sold": lambda p: -p.sold_per_day,
+                "listed": lambda p: -turn.get((p.item_id, p.variant), empty).listed_per_day,
+                "sell_through": lambda p: -(turn.get((p.item_id, p.variant), empty).sell_through or 0)}[sort]
         ranked = sorted((p for p in table.values() if p.variant >= 0 and p.sold_per_day >= min_sold
-                         and (p.market_value or p.current_min)),
-                        key=lambda p: (-p.sold_per_day, p.item_id))
+                         and (p.market_value or p.current_min)
+                         and turn.get((p.item_id, p.variant), empty).listed_per_day >= min_listed),
+                        key=lambda p: (rank(p), p.item_id))
         total, prices = len(ranked), ranked[offset:offset + limit]
     names = _names(conn, [p.item_id for p in prices])
     labels = store.variant_labels(conn, [p.variant for p in prices])
+    hist = pricing.cached_market_stats(conn, market, end - pricing.HISTORICAL_DAYS * 86400) if end else {}
+    game, reg = _market_game(conn, market)
+    their = tsm.lookup(conn, game, reg, [p.item_id for p in prices], tsm.realm_slug(load_config(), market))
     nxt = offset + len(prices)
-    return {"market": market, "window_hours": hours, "as_of": end, "as_of_iso": iso(end), "total": total,
+    return {"market": market, "window_hours": hours, "turnover_days": pricing.TURNOVER_DAYS,
+            "historical_days": pricing.HISTORICAL_DAYS, "as_of": end, "as_of_iso": iso(end), "total": total,
             "offset": offset, "next_offset": nxt if nxt < total else None,
-            "items": [_price_dict(p, names.get(p.item_id), labels) for p in prices]}
+            "items": [_price_dict(p, names.get(p.item_id), labels, {
+                "historical": (hist.get((p.item_id, p.variant)) or (None,))[0],
+                **_turnover_dict(turn.get((p.item_id, p.variant))),
+                "tsm": their.get(p.item_id) if p.variant >= 0 else None}) for p in prices]}
 
 
 def deals(conn, market: str, hours: int = 72, max_ratio: float = 0.7, min_sold: float = 1.0,
@@ -433,8 +477,10 @@ def api_history(market: str, item: str, variant: int = 0, since: int | None = No
 
 @router.get("/values")
 def api_values(market: str, item: list[str] | None = Query(None), hours: int = 72, min_sold: float = 0.0,
-               limit: int | None = None, offset: int = 0, user: User = Depends(auth.market_user)):
-    return _run(market_values, market, item, hours=hours, min_sold=min_sold, limit=limit, offset=offset)
+               limit: int | None = None, offset: int = 0, sort: str = "sold", min_listed: float = 0.0,
+               user: User = Depends(auth.market_user)):
+    return _run(market_values, market, item, hours=hours, min_sold=min_sold, limit=limit, offset=offset,
+                sort=sort, min_listed=min_listed)
 
 
 @router.get("/deals")

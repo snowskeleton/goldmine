@@ -295,9 +295,18 @@ TOOLS = [
     _tool("get_market_values", "Market values",
           "Goldmine's price model for a market: market_value (time-weighted median of p10 over the window), "
           "current_min, current_p10, buy, sell, sold_per_day (units that left early: sold or cancelled, an upper "
-          "bound) and definite_sold_per_day (bought out of listings still up). With items: just those; without: "
-          "every item, busiest first.",
+          "bound) and definite_sold_per_day (bought out of listings still up); historical (the same market value "
+          "over 60 days); listing turnover over 7 days: listed_per_day and posts_per_day (units and listings "
+          "newly posted), sell_through (share of ended units that left early rather than running out: low means "
+          "most posts expire) and avg_sold_price (unit price of what left early); and tsm, TradeSkillMaster's "
+          "public numbers where it has them (region: market_value, historical, avg_sale_price, sale_rate and "
+          "sold_per_day from TSM users' real sales; realm / commodities: market_value, min_buyout, recent, "
+          "historical). With items: just those; without: every item, sorted by sort.",
           {"market": _market, "items": _items, "hours": _hours,
+           "sort": {"type": "string", "enum": list(md.SORTS), "default": "sold",
+                    "description": "sold = busiest first; listed = most posted; sell_through = surest to sell"},
+           "min_listed": {"type": "number", "minimum": 0, "default": 0,
+                          "description": "Only items with at least this many units posted per day"},
            "min_sold": {"type": "number", "minimum": 0, "default": 0, "description": "Only items selling this many/day"},
            "limit": {"type": "integer", "minimum": 1, "maximum": md.MAX_ITEMS, "default": 50},
            "offset": {"type": "integer", "minimum": 0, "default": 0}},
